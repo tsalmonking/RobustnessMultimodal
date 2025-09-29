@@ -1,0 +1,13 @@
+torch>=1.10
+torchvision
+tqdm
+Pillow
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+transformers
+opencv-python
+peft==0.7.1
+einops==0.7.0
