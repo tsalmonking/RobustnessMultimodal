@@ -18,7 +18,7 @@ tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 def load_model(device, weights_path=WEIGHTS_PATH):
     # inizializza Themis tramite la funzione helper
     model, tokenizer, processor = get_Themis(
-        text_model_name="",
+        text_model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         name_img_embed="openai/clip-vit-base-patch32"
     )
 
@@ -75,7 +75,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, processor = load_model(device)
-    dataset = MultimodalDataset(DATA_CSV, DATASET_PATH, tokenizer=tokenizer)
+    dataset = MultimodalDataset(DATA_CSV=DATA_CSV, DATASET_PATH=DATASET_PATH, tokenizer=tokenizer)
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=NUM_WORKERS)
 
     rows = []
