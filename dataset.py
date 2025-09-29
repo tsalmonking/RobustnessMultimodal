@@ -24,16 +24,6 @@ class MultimodalDataset(Dataset):
 
         # ---- TEXT ----
         text = str(row["title"]) + " " + str(row["body_text"])
-        if self.tokenizer:
-            text_inputs = self.tokenizer(
-                text,
-                padding="max_length",
-                truncation=True,
-                max_length=64,
-                return_tensors="pt"
-            )
-        else:
-            text_inputs = None
 
         # ---- IMAGE ----
         image_url = row["image"]
@@ -59,7 +49,8 @@ class MultimodalDataset(Dataset):
         label = int(row["reliability"])
 
         return {
-            "text": text_inputs,
-            "image": image,
-            "label": label
+          "text": text,       # singola stringa
+          "image": image,     # PIL.Image.Image
+          "label": label,
+          "index": idx
         }
