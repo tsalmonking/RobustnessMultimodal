@@ -12,4 +12,4 @@ DATASET_PATH = "Data/ReCOVery"  # path alla cartella del dataset
 DATA_CSV = os.path.join(DATASET_PATH, "recovery-news-data.csv")  # CSV con colonne: image_path,text,label
 OUTPUT_DIR = "results"
 BATCH_SIZE = 8
-NUM_WORKERS = 4
+NUM_WORKERS = 0
