@@ -2,7 +2,7 @@
 import os
 
 import sys
-sys.path.append(os.path.abspath("../StatoDellArte/Projects/It-Is-Fake-Or-Not"))  # per importare il modello
+sys.path.append(os.path.abspath("../StatoDellArte/Projects/Is-It-Fake-Or-Not"))  # per importare il modello
 
 ROOT = os.path.dirname(__file__)
 WEIGHTS_PATH = "model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt"   # TODO: path ai pesi .pth

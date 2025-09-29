@@ -18,8 +18,8 @@ tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 def load_model(device, weights_path=WEIGHTS_PATH):
     # inizializza Themis tramite la funzione helper
     model, tokenizer, processor = get_Themis(
-        text_model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        name_img_embed="openai/clip-vit-base-patch32"
+        name_llm = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        name_img_embed = "openai/clip-vit-base-patch32"
     )
 
     # carica pesi salvati (se compatibili)
@@ -75,39 +75,39 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, processor = load_model(device)
-    dataset = MultimodalDataset(DATA_CSV=DATA_CSV, DATASET_PATH=DATASET_PATH, tokenizer=tokenizer)
+    dataset = MultimodalDataset(csv_path=DATA_CSV, tokenizer=tokenizer)
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=NUM_WORKERS)
 
     rows = []
 
-    # tqdm esterno: iterate over all corruption x perturbation combinations
-    combinations = [(img_name, img_fn, txt_name, txt_fn) 
-                    for img_name, img_fn in STANDARD_CORRUPTIONS.items()
-                    for txt_name, txt_fn in TEXT_PERTURBATIONS.items()]
-    
-    for img_name, img_fn, txt_name, txt_fn in tqdm(combinations, desc="Corruptions x Perturbations"):
-        y_true = []
-        y_pred = []
-        samples_changed = []
+    # tqdm interno: iterate over dataset
+    pbar = tqdm(loader, desc=f"Eval {img_name} x {txt_name}", leave=False)
+    for i, batch in enumerate(pbar):
+        # ---- IMAGE ----
+        pil = batch['image']  # batch_size=1, quindi pil è già una lista di 1 immagine
+        if isinstance(pil, list):
+            pil = pil[0]  # estrai PIL.Image
 
-        # tqdm interno: iterate over dataset
-        pbar = tqdm(loader, desc=f"Eval {img_name} x {txt_name}", leave=False)
-        for batch in pbar:
-            pil = batch['image_pil'][0]  # PIL image
-            label = int(batch['label'][0])
-            text = batch['text'][0]
-            idx = int(batch['index'][0])
+        # ---- LABEL ----
+        label = int(batch['label'].item()) if isinstance(batch['label'], torch.Tensor) else int(batch['label'][0])
 
-            # Apply corruption/perturbation
-            pil_corr = img_fn(pil)
-            text_corr = txt_fn(text)
+        # ---- TEXT ----
+        text_inputs = batch['text']  # ora è un dict di tensori
+        # Se vuoi passare al modello come batch
+        # pred, probs = predict_multimodal(model, pil_corr, text_inputs, tokenizer=tokenizer)
+        # Altrimenti se vuoi una singola stringa per la perturbation:
+        text = tokenizer.decode(text_inputs['input_ids'][0], skip_special_tokens=True)
 
-            # Predict
-            try:
-                pred, probs = predict_multimodal(model, pil_corr, text_corr, tokenizer=tokenizer)
-            except Exception as e:
-                print("ERROR executing predict_multimodal. Adatta la funzione di prediction al tuo modello.\n", e)
-                return
+        # ---- APPLICA CORRUPTION / PERTURBAZIONE ----
+        pil_corr = img_fn(pil)
+        text_corr = txt_fn(text)
+
+        # ---- PREDICT ----
+        try:
+            pred, probs = predict_multimodal(model, pil_corr, text_corr, tokenizer=tokenizer)
+        except Exception as e:
+            print("ERROR executing predict_multimodal. Adatta la funzione di prediction al tuo modello.\n", e)
+            return
 
             y_true.append(label)
             y_pred.append(pred)
