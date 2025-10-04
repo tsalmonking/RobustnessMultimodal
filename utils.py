@@ -90,7 +90,7 @@ def synonym_swap(text, n_swaps=1):
     return " ".join(toks)
 
 TEXT_PERTURBATIONS = {
-    "clean": lambda s: s,
+    #"clean": lambda s: s,
     "typos": lambda s: inject_typos(s, p=0.12),
     "negation": lambda s: negate_statement(s),
     "append_confuse": lambda s: append_confusing_phrase(s),
