@@ -47,17 +47,6 @@ def resize_scale(pil_img, scale=0.9):
     new_w, new_h = int(w*scale), int(h*scale)
     return pil_img.resize((new_w,new_h)).resize((w,h))
 
-# mapping delle corruzioni per iterare
-STANDARD_CORRUPTIONS = {
-    "clean": lambda im: im,
-    "gaussian_noise": lambda im: add_gaussian_noise(im, std=0.08),
-    "random_occlusion": lambda im: random_occlusion(im, occ_size_ratio=0.25),
-    "brightness_low": lambda im: change_brightness(im, 0.5),
-    "jpeg30": lambda im: jpeg_compress(im, quality=30),
-    "gaussian_blur": lambda im: gaussian_blur(im, radius=2),
-    "resize_scale": lambda im: resize_scale(im, scale=0.85)
-}
-
 # -----------------------
 # Text perturbations (lecite)
 # -----------------------
@@ -88,14 +77,6 @@ def synonym_swap(text, n_swaps=1):
         i = random.randint(0, len(toks)-2)
         toks[i], toks[i+1] = toks[i+1], toks[i]
     return " ".join(toks)
-
-TEXT_PERTURBATIONS = {
-    #"clean": lambda s: s,
-    "typos": lambda s: inject_typos(s, p=0.12),
-    "negation": lambda s: negate_statement(s),
-    "append_confuse": lambda s: append_confusing_phrase(s),
-    "syn_swap": lambda s: synonym_swap(s, n_swaps=2)
-}
 
 # -----------------------
 # Metrics & reporting

@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from torch.utils.data import Dataset
 from PIL import Image
+import torch
 
 class RecoveryDataset(Dataset):
     def __init__(self, csv_file, image_dir, tokenizer, processor, max_length=64):
@@ -16,23 +17,20 @@ class RecoveryDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-
-        # --- testo (title + text già preprocessati nel CSV) ---
-        text = str(row["title"]) + " " + str(row["text"])
-
-        # --- immagine ---
         img_path = os.path.join(self.image_dir, f"{row['id']}.jpg")
-        if os.path.exists(img_path):
-            image = Image.open(img_path).convert("RGB")
-        else:
-            image = Image.new("RGB", (224, 224), (255, 255, 255))  # fallback bianco
+        image = Image.open(img_path).convert("RGB")
+        image_inputs = self.processor(images=image, return_tensors="pt")
+        image_inputs["pixel_values"] = image_inputs["pixel_values"].unsqueeze(0)  # (1,3,H,W)
 
-        # --- label ---
-        label = int(row["label"])
+        text_inputs = self.tokenizer(
+            row["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        )
 
-        return {
-            "image": image,   # PIL.Image
-            "text": text,     # stringa
-            "label": label,   # int
-            "index": idx
-        }
+        label = torch.tensor(row["label"], dtype=torch.float)
+
+        return image_inputs["pixel_values"].squeeze(0), label, text_inputs["input_ids"].squeeze(0)
+

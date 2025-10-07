@@ -1,18 +1,19 @@
 import os
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
 from dataset import RecoveryDataset
 from utils import (
-    STANDARD_CORRUPTIONS,
-    TEXT_PERTURBATIONS,
     compute_classic_metrics,
     save_results_csv,
     plot_confusion_matrix,
 )
-from config import WEIGHTS_PATH, DATASET_PATH, DATA_CSV, OUTPUT_DIR, NUM_WORKERS
+from corruptions import (
+    STANDARD_CORRUPTIONS,
+    TEXT_PERTURBATIONS,
+)
+from config import WEIGHTS_PATH, DATASET_PATH, DATA_CSV, OUTPUT_DIR
 from transformers import AutoTokenizer
 from themis_model import get_Themis
 import numpy as np
@@ -30,7 +31,7 @@ def load_model(device, weights_path=WEIGHTS_PATH):
     )
 
     if os.path.exists(weights_path):
-        state = torch.load(weights_path, map_location=device)
+        state = torch.load(weights_path, map_location="cpu")
         try:
             model.load_state_dict(state)
         except Exception:
@@ -38,49 +39,12 @@ def load_model(device, weights_path=WEIGHTS_PATH):
             for k, v in state.items():
                 key = k.replace("module.", "") if k.startswith("module.") else k
                 new_state[key] = v
-            model.load_state_dict(new_state)
+            model.load_state_dict(new_state, strict=False)
     else:
-        print("Attenzione: file pesi non trovato, uso modello con pesi random.")
+        print("Attenzione: file pesi non trovato, uso modello non addestrato.")
 
     model.to(device).eval()
     return model, tokenizer, processor
-
-
-def predict_multimodal(model, pil_img, text, device, tokenizer, processor):
-    """
-    Predizione multimodale con Themis (immagine + testo).
-    Ritorna: pred (int), probs (np.ndarray)
-    """
-    # --- Preprocess immagine ---
-    image_inputs = processor(images=pil_img, return_tensors="pt").to(device)
-    image_inputs["pixel_values"] = image_inputs["pixel_values"].unsqueeze(1)
-
-    breakpoint()
-
-    # --- Preprocess testo ---
-    text_inputs = tokenizer(
-        [text],
-        padding="max_length",
-        truncation=True,
-        max_length=64,
-        return_tensors="pt",
-    ).to(device)
-
-    breakpoint()
-
-    # --- Forward pass ---
-    model.eval()
-    with torch.no_grad():
-        out = model(image_inputs, text_inputs)
-
-    # --- Estrai logits ---
-    logits = out[0] if isinstance(out, tuple) else out
-
-    # --- Softmax e predizione ---
-    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-    pred = int(np.argmax(probs))
-
-    return pred, probs
 
 
 # ---------- main evaluation ----------
@@ -89,7 +53,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, processor = load_model(device)
 
-    # Dataset già preprocessato (title+text e immagini salvate)
+    # Dataset con immagini e testi già preprocessati
     dataset = RecoveryDataset(
         csv_file=DATA_CSV,
         image_dir=os.path.join(DATASET_PATH, "images"),
@@ -97,12 +61,11 @@ def main():
         processor=processor,
         max_length=64,
     )
+
     loader = DataLoader(
         dataset,
-        batch_size=1,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        collate_fn=lambda x: x[0],  # prendo dict singolo
+        batch_size=4,
+        shuffle=False
     )
 
     rows = []
@@ -122,43 +85,50 @@ def main():
         samples_changed = []
 
         pbar = tqdm(loader, desc=f"Eval {img_name} x {txt_name}", leave=False)
-        for idx, batch in enumerate(pbar):
-            pil = batch["image"]  # PIL.Image dal dataset
-            text = batch["text"]  # stringa
-            label = batch["label"]
+        for images, labels, texts in pbar:
+            images = images.to(device)
+            texts = texts.to(device)
+            labels = labels.to(device)
 
-            # Applica corruzioni/perturbazioni
-            pil_corr = img_fn(pil)
-            text_corr = txt_fn(text)
+            # --- Decodifica e corrompi il testo ---
+            decoded_texts = tokenizer.batch_decode(texts, skip_special_tokens=True)
+            text_corr = [txt_fn(t) for t in decoded_texts]
 
-            breakpoint()
-
-            #try:
-            pred, probs = predict_multimodal(
-                model,
-                pil_corr,
+            # --- Ritokenizza i testi corrotti ---
+            text_inputs = tokenizer(
                 text_corr,
-                device,
-                tokenizer=tokenizer,
-                processor=processor,
-            )
-            #except Exception as e:
-                #print(f"ERROR executing predict_multimodal for idx={idx}: {e}")
-                #continue
+                padding="max_length",
+                truncation=True,
+                max_length=64,
+                return_tensors="pt"
+            ).to(device)
 
-            y_true.append(label)
-            y_pred.append(pred)
+            # --- Applica corruzioni alle immagini ---
+            pil_corr = img_fn(images)
+            image_inputs = {"pixel_values": pil_corr}  # aggiunge la dim K=1
 
-            if pred != label:
-                samples_changed.append(
-                    {
-                        "index": idx,
-                        "true": label,
-                        "pred": pred,
-                        "image_variant": img_name,
-                        "text_variant": txt_name,
-                    }
-                )
+            # --- Forward ---
+            with torch.no_grad():
+                outputs = model(image_inputs, text_inputs)
+
+            logits = outputs[0] if isinstance(outputs, tuple) else outputs
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+            preds = np.argmax(probs, axis=1)
+
+            y_true.extend(labels.cpu().numpy().tolist())
+            y_pred.extend(preds.tolist())
+
+            for i, (yt, yp) in enumerate(zip(labels.cpu(), preds)):
+                if yt != yp:
+                    samples_changed.append(
+                        {
+                            "index": i,
+                            "true": int(yt),
+                            "pred": int(yp),
+                            "image_variant": img_name,
+                            "text_variant": txt_name,
+                        }
+                    )
 
         # compute metrics
         if len(y_true) > 0:
@@ -166,6 +136,7 @@ def main():
             cm = metrics["confusion_matrix"]
             out_subdir = os.path.join(OUTPUT_DIR, f"{img_name}__{txt_name}")
             os.makedirs(out_subdir, exist_ok=True)
+
             plot_confusion_matrix(
                 cm,
                 labels=list(range(cm.shape[0])),
@@ -191,11 +162,9 @@ def main():
                     indent=2,
                 )
 
-    # save overall csv
     save_results_csv(rows, os.path.join(OUTPUT_DIR, "robustness_report.csv"))
     print("DONE. Results in", OUTPUT_DIR)
 
 
 if __name__ == "__main__":
     main()
- 
