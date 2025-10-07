@@ -6,13 +6,13 @@ Official repository for evaluating the **multimodal robustness** of the *Themis*
 
 ## Usage Guide
 
-### 1️ Clone the repository
+### Step 1️: Clone the repository
 ```bash
 git clone https://github.com/Davi2082/RobustnessMultimodal.git
 cd RobustnessMultimodal
 ```
 
-### 2️ Create and activate a virtual environment
+### Step 2️: Create and activate a virtual environment
 **On Linux/MacOS:**
 ```bash
 python3 -m venv venv
@@ -25,7 +25,7 @@ python -m venv venv
 venv\Scripts\activate
 ```
 
-### 3️ Install dependencies
+### Step 3️: Install dependencies
 Install the base packages:
 ```bash
 pip install -r requirements.txt
@@ -43,7 +43,7 @@ pip install numpy==1.26.4
 
 ---
 
-## Folder setup
+### Step 4: Folder setup
 
 You must manually create the following folders before running the code:
 
@@ -52,7 +52,7 @@ You must manually create the following folders before running the code:
 
 ---
 
-## Running the attack on Themis
+## Step 5: Running the attack on Themis
 
 Once the folders are created and all dependencies are installed, run the multimodal robustness evaluation with:
 
