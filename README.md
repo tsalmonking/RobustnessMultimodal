@@ -1,6 +1,14 @@
 # RobustnessMultimodal
 
 Official repository for evaluating the **multimodal robustness** of the *Themis* model through adversarial attacks on both text and image inputs.
+---
+
+## Main requirements
+- Python == 3.10
+- CUDA 11.8 compatible
+- torch 2.1.2
+- torchvision 0.16.2
+- numpy 1.26.4
 
 ---
 
@@ -66,15 +74,6 @@ This script executes the multimodal attack and evaluates the robustness of the T
 
 ## Original repository
 [https://github.com/Davi2082/RobustnessMultimodal](https://github.com/Davi2082/RobustnessMultimodal)
-
----
-
-## Main requirements
-- Python == 3.10
-- CUDA 11.8 compatible
-- torch 2.1.2
-- torchvision 0.16.2
-- numpy 1.26.4
 
 ---
 
