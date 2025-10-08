@@ -14,16 +14,11 @@ from corruptions import (
     TEXT_PERTURBATIONS,
 )
 from config import WEIGHTS_PATH, DATASET_PATH, DATA_CSV, OUTPUT_DIR
-from transformers import AutoTokenizer
 from themis_model import get_Themis
 import numpy as np
 
 
-# ---------- tokenizer ----------
-tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-
-
-# ---------- load model ----------
+# load model and weights
 def load_model(device, weights_path=WEIGHTS_PATH):
     model, tokenizer, processor = get_Themis(
         name_llm="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -47,8 +42,9 @@ def load_model(device, weights_path=WEIGHTS_PATH):
     return model, tokenizer, processor
 
 
-# ---------- main evaluation ----------
+# Main evaluation loop
 def main():
+    # Prepare output directory and device
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, processor = load_model(device)
@@ -62,15 +58,13 @@ def main():
         max_length=64,
     )
 
-    loader = DataLoader(
-        dataset,
-        batch_size=4,
-        shuffle=False
-    )
+    # DataLoader for batching
+    loader = DataLoader(dataset, batch_size=4, shuffle=False)
 
+    # To store results
     rows = []
 
-    # iterate over all corruption x perturbation combinations
+    # Iterate over all corruption x perturbation combinations
     combinations = [
         (img_name, img_fn, txt_name, txt_fn)
         for img_name, img_fn in STANDARD_CORRUPTIONS.items()
@@ -90,34 +84,37 @@ def main():
             texts = texts.to(device)
             labels = labels.to(device)
 
-            # --- Decodifica e corrompi il testo ---
+            # Applying text perturbation
             decoded_texts = tokenizer.batch_decode(texts, skip_special_tokens=True)
             text_corr = [txt_fn(t) for t in decoded_texts]
 
-            # --- Ritokenizza i testi corrotti ---
+            # Tokenize corrupted texts
             text_inputs = tokenizer(
                 text_corr,
                 padding="max_length",
                 truncation=True,
                 max_length=64,
-                return_tensors="pt"
+                return_tensors="pt",
             ).to(device)
 
-            # --- Applica corruzioni alle immagini ---
+            # Applying image corruption
             pil_corr = img_fn(images)
-            image_inputs = {"pixel_values": pil_corr}  # aggiunge la dim K=1
+            image_inputs = {"pixel_values": pil_corr}  # already tensor
 
-            # --- Forward ---
+            # Forward pass
             with torch.no_grad():
                 outputs = model(image_inputs, text_inputs)
 
+            # Get predictions
             logits = outputs[0] if isinstance(outputs, tuple) else outputs
             probs = torch.softmax(logits, dim=1).cpu().numpy()
             preds = np.argmax(probs, axis=1)
 
+            # Collect results
             y_true.extend(labels.cpu().numpy().tolist())
             y_pred.extend(preds.tolist())
 
+            # Identify changed predictions
             for i, (yt, yp) in enumerate(zip(labels.cpu(), preds)):
                 if yt != yp:
                     samples_changed.append(
@@ -130,7 +127,7 @@ def main():
                         }
                     )
 
-        # compute metrics
+        # Compute metrics and save results
         if len(y_true) > 0:
             metrics = compute_classic_metrics(y_true, y_pred)
             cm = metrics["confusion_matrix"]
@@ -155,6 +152,7 @@ def main():
             }
             rows.append(row)
 
+            # Saving the summary in a JSON file
             with open(os.path.join(out_subdir, "summary.json"), "w") as f:
                 json.dump(
                     {"metrics": row, "examples_changed": samples_changed[:50]},
