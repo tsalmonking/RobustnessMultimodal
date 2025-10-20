@@ -18,11 +18,11 @@ parser.add_argument(
     help="Attack mode: 'black' (use standard corruptions) or 'white' (use gradient-based PGD).",
 )
 # white-box specific params (used only if attack-mode=white)
-parser.add_argument("--pgd-iters", type=int, default=10)
+parser.add_argument("--pgd-iters", type=int, default=40)
 parser.add_argument("--eps-img", type=float, default=8 / 255.0)
-parser.add_argument("--alpha-img", type=float, default=2 / 255.0)
+parser.add_argument("--alpha-img", type=float, default=8 / 40 * 1.25)
 parser.add_argument("--eps-text", type=float, default=5.0)
-parser.add_argument("--alpha-text", type=float, default=1.0)
+parser.add_argument("--alpha-text", type=float, default=5 / 40 * 1.0)
 parser.add_argument(
     "--text-perturbation",
     choices=["true", "false"],
@@ -35,7 +35,7 @@ args = parser.parse_args()
 DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
-BATCH_SIZE = 2
+BATCH_SIZE = 16
 
 
 # Main evaluation loop
