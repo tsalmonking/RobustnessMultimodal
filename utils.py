@@ -1,31 +1,113 @@
+import os
+import torch
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    precision_recall_fscore_support,
-    confusion_matrix,
-)
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+
+# Custom modules
+from themis_model import get_Themis
+
+
+# Utilities for logging
+def info(msg):
+    print(f"\033[32m{msg}\033[0m")
+
+
+def warning(msg):
+    print(f"\033[33m{msg}\033[0m")
+
+
+def error(msg):
+    print(f"\033[31m{msg}\033[0m")
+
+
+# -----------------------
+# Data handling
+# -----------------------
+def multimodal_collate(batch):
+    """
+    batch: list of tuples (text: str, image: PIL.Image, label: int)
+    Returns:
+      texts: list[str]
+      images: list[PIL.Image]
+      labels: list[int]
+    """
+    id = [item[0] for item in batch]
+    texts = [item[1] for item in batch]
+    images = [item[2] for item in batch]
+    labels = [item[3] for item in batch]
+    return id, texts, images, labels
+
+
+# -----------------------
+# Model loading
+# -----------------------
+def load_model(
+    device,
+    weights_path="model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt",
+    name_llm="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    name_img_embed="openai/clip-vit-base-patch32",
+):
+    p = weights_path.split("\\")[-1].split("_")
+    lora_alpha = int(p[2])
+    lora_r = int(p[3])
+    lora_dropout = float(p[4])
+    use_lora = True if "True" in p[5] else False
+    
+    model, tokenizer, processor = get_Themis(
+        name_llm=name_llm,
+        name_img_embed=name_img_embed,
+        use_lora=use_lora,
+        lora_alpha=lora_alpha,
+        lora_r=lora_r,
+        lora_dropout=lora_dropout,
+    )
+
+    if os.path.exists(weights_path):
+        try:
+            # when a serious GPU will be available change map_location to device
+            model.load_state_dict(torch.load(weights_path, map_location=device))
+        except Exception:
+            error(
+                "Error loading weights, it will be used random weights. The results will be meaningless."
+            )
+    else:
+        warning(
+            "Warning: weights file not found, using random weights. The results will be meaningless."
+        )
+
+    model.to(device).eval()
+    return model, tokenizer, processor
 
 
 # -----------------------
 # Metrics & reporting
 # -----------------------
-def compute_classic_metrics(y_true, y_pred, pos_label=1):
+def compute_metrics(y_true, y_pred):
     acc = accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = precision_recall_fscore_support(
-        y_true,
-        y_pred,
-        average="binary" if len(set(y_true)) == 2 else "macro",
-        zero_division=0,
-    )
-    cm = confusion_matrix(y_true, y_pred)
+    prec = precision_score(y_true, y_pred)
+    rec = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    macro_f1 = f1_score(y_true, y_pred, average='macro')
+    conf_matr = confusion_matrix(y_true, y_pred)
     return {
-        "accuracy": acc,
-        "precision": prec,
-        "recall": rec,
-        "f1": f1,
-        "confusion_matrix": cm,
+        "accuracy": round(acc, 3),
+        "precision": round(prec, 3),
+        "recall": round(rec, 3),
+        "f1": round(f1, 3),
+        "macro_f1": round(macro_f1, 3)
+    }, conf_matr
+
+def compute_robustness_metrics(y_true, y_clean, y_corr):
+    delta_acc = accuracy_score(y_true, y_clean) - accuracy_score(y_true, y_corr)
+    flip_rate = sum(1 for yc, yp in zip(y_clean, y_corr) if yc != yp) / len(y_clean)
+    robust_accuracy = 1 - flip_rate
+    return {
+        "delta_accuracy": round(delta_acc, 2),
+        "flip_rate": round(flip_rate, 2),
+        "robust_accuracy": round(robust_accuracy, 2)
     }
 
 
