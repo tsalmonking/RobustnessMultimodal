@@ -5,9 +5,9 @@ from torch.utils.data import DataLoader
 
 # Custom modules
 from dataset import RecoveryDataset
-from utils import multimodal_collate
+from utils import multimodal_collate, load_model
 from attacks import multimodal_attack
-from config import OUTPUT_DIR
+from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, OUTPUT_DIR
 
 # CLI arguments
 parser = argparse.ArgumentParser()
@@ -35,7 +35,7 @@ args = parser.parse_args()
 DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 
 
 # Main evaluation loop
@@ -43,6 +43,14 @@ def main():
     # Prepare output directory and device
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Loading the model
+    model, tokenizer, processor = load_model(
+        device,
+        weights_path=WEIGHTS_PATH,
+        name_llm=NAME_LLM,
+        name_img_embed=NAME_IMG_EMBED,
+    )
 
     # The dataset with images and texts
     dataset = RecoveryDataset(csv_file=DATA_CSV, image_dir=IMAGES_DIR)
@@ -54,9 +62,12 @@ def main():
         dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
     )
 
-    multimodal_attack("black", loader, device)
+    multimodal_attack(model, tokenizer, processor, "black", loader, device)
 
     multimodal_attack(
+        model,
+        tokenizer,
+        processor,
         "white",
         loader,
         device,
@@ -68,6 +79,9 @@ def main():
     )
 
     multimodal_attack(
+        model,
+        tokenizer,
+        processor,
         "white",
         loader,
         device,

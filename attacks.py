@@ -8,9 +8,8 @@ from tqdm import tqdm
 
 # Custom modules
 from corruptions import IMAGE_CORRUPTIONS, TEXT_PERTURBATIONS
-from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, OUTPUT_DIR
+from config import OUTPUT_DIR
 from utils import (
-    load_model,
     compute_metrics,
     compute_robustness_metrics,
     plot_confusion_matrix,
@@ -190,6 +189,9 @@ def white_box(
 
 
 def multimodal_attack(
+    model,
+    tokenizer,
+    processor,
     attack_mode,
     loader,
     device,
@@ -200,13 +202,6 @@ def multimodal_attack(
     alpha_txt=0.5,
     text_perturbation="false",
 ):
-    model, tokenizer, processor = load_model(
-        device,
-        weights_path=WEIGHTS_PATH,
-        name_llm=NAME_LLM,
-        name_img_embed=NAME_IMG_EMBED,
-    )
-
     info(f"\nStarting {attack_mode} robustness evaluation...")
 
     y_true = []
@@ -260,6 +255,7 @@ def multimodal_attack(
                 alpha_txt,
                 text_perturbation,
             )
+        torch.cuda.empty_cache()
         corr_preds = [1 if i > 0.5 else 0 for i in clean_outputs]
         y_pred_corr.extend(corr_preds)
 
@@ -413,6 +409,8 @@ def PGDattack(
                 delta_img += alpha_img * torch.sign(delta_img.grad)
                 delta_img.clamp_(-eps_img, eps_img)
             delta_img.grad.zero_()
+            del logits, loss, cur_pv
+            torch.cuda.empty_cache()
 
             # Update text embeddings (L2)
             grad_emb = emb_adv.grad.detach()
@@ -433,7 +431,8 @@ def PGDattack(
                 emb_adv.data[exceed] = (
                     emb_baseline.data[exceed] + delta_e[exceed] * factor[:, None, None]
                 )
-
+            del logits, loss, grad_emb, cur_pv
+            torch.cuda.empty_cache()
             emb_adv.grad.zero_()
 
         # Fallback in case best values were never updated
@@ -528,6 +527,8 @@ def PGDattack(
                 eps_img,
             )
             delta_img.grad.zero_()
+            del logits, loss, cur_pv
+            torch.cuda.empty_cache()
 
         images_adv = {"pixel_values": (pv + delta_img).detach().clone()}
         text_adv = best_text_tok
