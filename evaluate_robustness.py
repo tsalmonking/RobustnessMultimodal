@@ -19,11 +19,11 @@ parser.add_argument(
     help="Attack mode: 'black' (use standard corruptions) or 'white' (use gradient-based PGD).",
 )
 # white-box specific params (used only if attack-mode=white)
-parser.add_argument("--pgd-iters", type=int, default=10)
+parser.add_argument("--pgd-iters", type=int, default=40)
 parser.add_argument("--eps-img", type=float, default=8 / 255.0)
-parser.add_argument("--alpha-img", type=float, default=2 / 255.0)
+parser.add_argument("--alpha-img", type=float, default=8 / 40 * 1.25)
 parser.add_argument("--eps-text", type=float, default=5.0)
-parser.add_argument("--alpha-text", type=float, default=1.0)
+parser.add_argument("--alpha-text", type=float, default=5 / 40 * 1.0)
 parser.add_argument(
     "--text-perturbation",
     choices=["true", "false"],
@@ -49,7 +49,7 @@ def main():
     dataset = RecoveryDataset(csv_file=DATA_CSV, image_dir=IMAGES_DIR)
 
     # for debug loader gets smaller
-    # subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 10)))
+    #subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 300)))
     # DataLoader for batching
     loader = DataLoader(
         dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate

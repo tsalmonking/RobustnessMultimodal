@@ -52,7 +52,7 @@ def black_box(
         corr_text_inputs = tokenizer(
             corr_texts,
             padding="max_length",
-            max_length=2678,
+            truncation=True,
             return_tensors="pt",
         ).to(device)
 
@@ -212,12 +212,12 @@ def multimodal_attack(
     y_true = []
     y_pred_clean, y_pred_corr = [], []
 
-    for ids, texts, images, labels in tqdm(loader, desc="Evaluating"):
+    for ids, texts, images, labels in tqdm(loader, desc="Evaluating", leave=False):
         # ----- CLEAN FORWARD -----
         clean_text_inputs = tokenizer(
             texts,
             padding="max_length",
-            max_length=2678,
+            truncation=True,
             return_tensors="pt",
         ).to(device)
         clean_image_inputs = processor(images=images, return_tensors="pt").to(device)
@@ -370,7 +370,7 @@ def PGDattack(
     texts_tok = tokenizer(
         texts,
         padding="max_length",
-        max_length=2678,
+        truncation=True,
         return_tensors="pt",
     ).to(device)
     emb_baseline = model.emb(texts_tok["input_ids"]).detach()
@@ -480,7 +480,7 @@ def PGDattack(
             texts_tok_corr = tokenizer(
                 corr_texts,
                 padding="max_length",
-                max_length=2678,
+                truncation=True,
                 return_tensors="pt",
             ).to(device)
             emb_corr = model.emb(texts_tok_corr["input_ids"]).detach()
