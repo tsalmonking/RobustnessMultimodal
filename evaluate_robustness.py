@@ -1,7 +1,6 @@
 import os
 import torch
 import argparse
-import winsound
 from torch.utils.data import DataLoader
 
 # Custom modules
@@ -36,7 +35,7 @@ args = parser.parse_args()
 DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
-BATCH_SIZE = 2
+BATCH_SIZE = 16
 
 
 # Main evaluation loop

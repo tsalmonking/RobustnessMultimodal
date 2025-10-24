@@ -68,7 +68,7 @@ Once the folders are created and all dependencies are installed, run the multimo
 python evaluate_robustness.py
 ```
 
-This script executes the multimodal attack and evaluates the robustness of the Themis model using the provided weights.
+This script executes the multimodal attack and evaluates the robustness of the Themis model using the provided weights. The evaluation results will be in **`results/`**
 
 ---
 
