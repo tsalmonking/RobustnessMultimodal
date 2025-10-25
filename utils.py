@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
@@ -101,13 +102,36 @@ def compute_metrics(y_true, y_pred):
     }, conf_matr
 
 def compute_robustness_metrics(y_true, y_clean, y_corr):
-    delta_acc = accuracy_score(y_true, y_clean) - accuracy_score(y_true, y_corr)
-    flip_rate = sum(1 for yc, yp in zip(y_clean, y_corr) if yc != yp) / len(y_clean)
-    robust_accuracy = 1 - flip_rate
+    y_true = np.array(y_true)
+    y_clean = np.array(y_clean)
+    y_corr = np.array(y_corr)
+    
+    # Accuracy on corrupted input
+    accuracy_on_corrupted = accuracy_score(y_true, y_corr)
+    
+    # Attack Success Rate (ASR) - proportion of originally correct classifications that were flipped to an incorrect label by the attack.
+    is_correct_clean = (y_clean == y_true)
+    total_correct_clean = np.sum(is_correct_clean)
+    if total_correct_clean == 0:
+        asr = 0.0
+    else:
+        is_successful_attack = is_correct_clean & (y_corr != y_true)
+        successful_attacks = np.sum(is_successful_attack)
+        asr = successful_attacks / total_correct_clean
+
+    # Delta Accuracy - the difference between accuracy on clean and corrupted input
+    accuracy_on_clean = accuracy_score(y_true, y_clean)
+    delta_acc = accuracy_on_clean - accuracy_on_corrupted
+    
+    # Flip Rate - percentage of inputs were correctly classified even after perturbation
+    flip_rate = np.sum(y_clean != y_corr) / len(y_clean)
+    
     return {
-        "delta_accuracy": round(delta_acc, 2),
-        "flip_rate": round(flip_rate, 2),
-        "robust_accuracy": round(robust_accuracy, 2)
+        "accuracy_on_clean": round(accuracy_on_clean, 3),
+        "accuracy_on_corrupted": round(accuracy_on_corrupted, 3),
+        "delta_accuracy": round(delta_acc, 3),
+        "flip_rate": round(flip_rate, 3),
+        "attack_success_rate": round(asr, 3) 
     }
 
 

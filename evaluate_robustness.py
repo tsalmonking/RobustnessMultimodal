@@ -2,6 +2,7 @@ import os
 import torch
 import argparse
 from torch.utils.data import DataLoader
+from accelerate import Accelerator
 
 # Custom modules
 from dataset import RecoveryDataset
@@ -35,15 +36,16 @@ args = parser.parse_args()
 DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
-BATCH_SIZE = 2
+BATCH_SIZE = 16
 
 
 # Main evaluation loop
 def main():
     # Prepare output directory and device
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
+    accelerator = Accelerator()
+    device = accelerator.device
+    
     # Loading the model
     model, tokenizer, processor = load_model(
         device,
@@ -62,12 +64,16 @@ def main():
         dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
     )
 
-    multimodal_attack(model, tokenizer, processor, "black", loader, device)
+    # Preparing for processing optimizating GPU use
+    model, loader = accelerator.prepare(model, loader)
+
+    multimodal_attack(model, tokenizer, processor, accelerator, "black", loader, device)
 
     multimodal_attack(
         model,
         tokenizer,
         processor,
+        accelerator,
         "white",
         loader,
         device,
@@ -82,6 +88,7 @@ def main():
         model,
         tokenizer,
         processor,
+        accelerator,
         "white",
         loader,
         device,

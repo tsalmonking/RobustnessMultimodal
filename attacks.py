@@ -53,10 +53,10 @@ def black_box(
             padding="max_length",
             truncation=True,
             return_tensors="pt",
-        ).to(device)
+        )
 
         # Images processing
-        corr_image_inputs = processor(images=corr_pils, return_tensors="pt").to(device)
+        corr_image_inputs = processor(images=corr_pils, return_tensors="pt")
         corr_image_inputs["pixel_values"] = corr_image_inputs["pixel_values"].unsqueeze(
             1
         )
@@ -67,7 +67,7 @@ def black_box(
             corr_preds = [1 if i > 0.5 else 0 for i in outputs]
             labels_preds = outputs.squeeze()
             labels_tensor = torch.tensor(
-                labels, dtype=torch.float32, device=device
+                labels, dtype=torch.float32
             ).squeeze()
             loss_val = loss_fn(labels_preds, labels_tensor)
 
@@ -192,6 +192,7 @@ def multimodal_attack(
     model,
     tokenizer,
     processor,
+    accelerator,
     attack_mode,
     loader,
     device,
@@ -214,8 +215,8 @@ def multimodal_attack(
             padding="max_length",
             truncation=True,
             return_tensors="pt",
-        ).to(device)
-        clean_image_inputs = processor(images=images, return_tensors="pt").to(device)
+        )
+        clean_image_inputs = processor(images=images, return_tensors="pt")
         clean_image_inputs["pixel_values"] = clean_image_inputs[
             "pixel_values"
         ].unsqueeze(1)
@@ -289,15 +290,22 @@ def multimodal_attack(
     print(cm_clean)
     print("Corr Confusion Matrix")
     print(cm_corr)
+    print("\n--- Robustness Metrics ---")
+
     print(
-        f"Delta Accuracy: {robustness_metrics['delta_accuracy'] * 100:.2f}%, how much the model's accuracy dropped"
+        f"Adversarial Accuracy: {robustness_metrics['accuracy_on_corrupted'] * 100:.2f}%, percentage of inputs correctly classified after the adversarial perturbation."
     )
     print(
-        f"Flip Rate: {robustness_metrics['flip_rate'] * 100:.2f}%, how many predictions changed under corruption"
+        f"Delta Accuracy: {robustness_metrics['delta_accuracy'] * 100:.2f}%, difference between clean inputs and corrupted inputs"
     )
     print(
-        f"Robust Accuracy: {robustness_metrics['robust_accuracy'] * 100:.2f}%, percentage of inputs were correctly classified even after perturbation"
+        f"Flip Rate: {robustness_metrics['flip_rate'] * 100:.2f}%, percentage of inputs where the model's prediction changed after the perturbation."
     )
+    print(
+        f"Attack Success Rate (ASR): {robustness_metrics['attack_success_rate'] * 100:.2f}%, proportion of originally correct classifications that were flipped to an incorrect label"
+    )
+    
+    
 
     plot_confusion_matrix(
         cm_clean,
@@ -359,7 +367,7 @@ def PGDattack(
     # -----------------------------
     # Initialize clean inputs
     # -----------------------------
-    images_clean = processor(images=images, return_tensors="pt").to(device)
+    images_clean = processor(images=images, return_tensors="pt")
     images_clean["pixel_values"] = images_clean["pixel_values"].unsqueeze(1)
     pv = images_clean["pixel_values"].clone().detach()
 
@@ -368,7 +376,7 @@ def PGDattack(
         padding="max_length",
         truncation=True,
         return_tensors="pt",
-    ).to(device)
+    )
     emb_baseline = model.emb(texts_tok["input_ids"]).detach()
 
     # ==============================================================
@@ -409,8 +417,6 @@ def PGDattack(
                 delta_img += alpha_img * torch.sign(delta_img.grad)
                 delta_img.clamp_(-eps_img, eps_img)
             delta_img.grad.zero_()
-            del logits, loss, cur_pv
-            torch.cuda.empty_cache()
 
             # Update text embeddings (L2)
             grad_emb = emb_adv.grad.detach()
@@ -431,9 +437,10 @@ def PGDattack(
                 emb_adv.data[exceed] = (
                     emb_baseline.data[exceed] + delta_e[exceed] * factor[:, None, None]
                 )
-            del logits, loss, grad_emb, cur_pv
-            torch.cuda.empty_cache()
             emb_adv.grad.zero_()
+            # Free memory
+            del logits, loss, cur_pv, grad_emb, delta_e, step_emb
+            torch.cuda.empty_cache()
 
         # Fallback in case best values were never updated
         if best_pv is None or best_emb is None:
@@ -481,7 +488,7 @@ def PGDattack(
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt",
-            ).to(device)
+            )
             emb_corr = model.emb(texts_tok_corr["input_ids"]).detach()
 
             with torch.no_grad():
