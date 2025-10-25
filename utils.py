@@ -69,7 +69,7 @@ def load_model(
     if os.path.exists(weights_path):
         try:
             # when a serious GPU will be available change map_location to device
-            model.load_state_dict(torch.load(weights_path, map_location=device))
+            model.load_state_dict(torch.load(weights_path, map_location="cpu"))
         except Exception:
             error(
                 "Error loading weights, it will be used random weights. The results will be meaningless."
