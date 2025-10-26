@@ -84,25 +84,25 @@ def black_box(
     out_dir = os.path.join(OUTPUT_DIR, "black", "corr")
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "texts"), exist_ok=True)
-    if random.choices([0, 1], weights=[0.5, 0.5], k=1)[0] == 1:
-        choice = random.randint(0, len(best_images) - 1)
-        best_images[choice].save(
-            os.path.join(out_dir, "images", f"{ids[choice]}_{best_img_name}.png")
-        )
-        json_path = os.path.join(
-            out_dir, "texts", f"{ids[choice]}_{best_txt_name}.json"
-        )
-        data = {
-            "label": int(labels[choice]),
-            "label_pred_clean": int(clean_preds[choice]),
-            "label_pred_corr": int(corr_preds[choice]),
-            "clean_text": texts[choice],
-            "corr_txt": best_texts[choice],
-        }
+    for i in range(len(clean_preds)):
+        if int(clean_preds[i]) != int(corr_preds[i]):
+            best_images[i].save(
+                os.path.join(out_dir, "images", f"{ids[i]}_{best_img_name}.png")
+            )
+            json_path = os.path.join(
+                out_dir, "texts", f"{ids[i]}_{best_txt_name}.json"
+            )
+            data = {
+                "label": int(labels[i]),
+                "label_pred_clean": int(clean_preds[i]),
+                "label_pred_corr": int(corr_preds[i]),
+                "clean_text": texts[i],
+                "corr_txt": best_texts[i],
+            }
 
-        os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     return best_outputs
 
@@ -168,22 +168,25 @@ def white_box(
         out_dir = os.path.join(OUTPUT_DIR, "white_img_only", "corr")
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "texts"), exist_ok=True)
-    if random.choices([0, 1], weights=[0.5, 0.5], k=1)[0] == 1:
-        choice = random.randint(0, len(best_images) - 1)
-        best_images[choice].save(os.path.join(out_dir, "images", f"{ids[choice]}.png"))
-        json_path = os.path.join(
-            out_dir, "texts", f"{ids[choice]}{best_text_corruption}.json"
-        )
-        data = {
-            "label": int(labels[choice]),
-            "label_pred_clean": int(clean_preds[choice]),
-            "label_pred_corr": int(corr_preds[choice]),
-            "clean_text": texts[choice],
-            "corr_txt": best_texts[choice],
-        }
-        os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    for i in range(len(clean_preds)):
+        if int(clean_preds[i]) != int(corr_preds[i]):
+            best_images[i].save(
+                os.path.join(out_dir, "images", f"{ids[i]}.png")
+            )
+            json_path = os.path.join(
+                out_dir, "texts", f"{ids[i]}_{best_text_corruption}.json"
+            )
+            data = {
+                "label": int(labels[i]),
+                "label_pred_clean": int(clean_preds[i]),
+                "label_pred_corr": int(corr_preds[i]),
+                "clean_text": texts[i],
+                "corr_txt": best_texts[i],
+            }
+
+            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     return outputs
 

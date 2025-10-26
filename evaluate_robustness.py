@@ -10,6 +10,13 @@ from utils import multimodal_collate, load_model
 from attacks import multimodal_attack
 from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, OUTPUT_DIR
 
+# PGD default parameters
+ITERS = 80
+EPS_IMG = 8 / 255.0
+ALPHA_IMG = EPS_IMG / (ITERS * 1.25)
+EPS_TEXT = 5.0
+ALPHA_TEXT = EPS_TEXT / (ITERS * 1.0)
+
 # CLI arguments
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -19,11 +26,11 @@ parser.add_argument(
     help="Attack mode: 'black' (use standard corruptions) or 'white' (use gradient-based PGD).",
 )
 # white-box specific params (used only if attack-mode=white)
-parser.add_argument("--pgd-iters", type=int, default=40)
-parser.add_argument("--eps-img", type=float, default=8 / 255.0)
-parser.add_argument("--alpha-img", type=float, default=8 / 40 * 1.25)
-parser.add_argument("--eps-text", type=float, default=5.0)
-parser.add_argument("--alpha-text", type=float, default=5 / 40 * 1.0)
+parser.add_argument("--pgd-iters", type=int, default=ITERS)
+parser.add_argument("--eps-img", type=float, default=EPS_IMG)
+parser.add_argument("--alpha-img", type=float, default=ALPHA_IMG)
+parser.add_argument("--eps-text", type=float, default=EPS_TEXT)
+parser.add_argument("--alpha-text", type=float, default=ALPHA_TEXT)
 parser.add_argument(
     "--text-perturbation",
     choices=["true", "false"],
@@ -58,7 +65,7 @@ def main():
     dataset = RecoveryDataset(csv_file=DATA_CSV, image_dir=IMAGES_DIR)
 
     # for debug loader gets smaller
-    #subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 300)))
+    #subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 170)))
     # DataLoader for batching
     loader = DataLoader(
         dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
