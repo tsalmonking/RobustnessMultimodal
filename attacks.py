@@ -5,10 +5,11 @@ import torch.nn.functional as F
 import numpy as np
 import random
 from tqdm import tqdm
+from PIL import Image
 
 # Custom modules
 from corruptions import IMAGE_CORRUPTIONS, TEXT_PERTURBATIONS
-from config import OUTPUT_DIR
+from config import OUTPUT_DIR, DEBUG_MODE
 from utils import (
     compute_metrics,
     compute_robustness_metrics,
@@ -17,11 +18,17 @@ from utils import (
 )
 
 
-from PIL import Image
-
-
 def black_box(
-    model, tokenizer, processor, ids, texts, images, labels, clean_preds, device
+    model,
+    tokenizer,
+    processor,
+    accelerator,
+    ids,
+    texts,
+    images,
+    labels,
+    clean_preds,
+    device,
 ):
     combinations = [
         (img_name, img_fun, txt_name, txt_fun)
@@ -36,6 +43,10 @@ def black_box(
     best_texts = None
     best_img_name = None
     best_txt_name = None
+    
+    out_dir = os.path.join(OUTPUT_DIR, "black", "corr")
+    os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "texts"), exist_ok=True)
 
     for img_name, img_fun, txt_name, txt_fun in tqdm(
         combinations,
@@ -48,12 +59,21 @@ def black_box(
         corr_pils = img_fun(images)
 
         # Texts tokenization
-        corr_text_inputs = tokenizer(
-            corr_texts,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
+        if DEBUG_MODE:
+            corr_text_inputs = tokenizer(
+                corr_texts,
+                padding="max_length",
+                truncation=True,
+                max_length=32,
+                return_tensors="pt",
+            )
+        else:
+            corr_text_inputs = tokenizer(
+                corr_texts,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
 
         # Images processing
         corr_image_inputs = processor(images=corr_pils, return_tensors="pt")
@@ -66,43 +86,32 @@ def black_box(
             outputs = model(corr_image_inputs, corr_text_inputs)
             corr_preds = [1 if i > 0.5 else 0 for i in outputs]
             labels_preds = outputs.squeeze()
-            labels_tensor = torch.tensor(
-                labels, dtype=torch.float32
-            ).squeeze()
+            labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze()
             loss_val = loss_fn(labels_preds, labels_tensor)
+        
+        for i in range(len(clean_preds)):
+            if int(clean_preds[i]) != int(corr_preds[i]):
+                images[i].save(os.path.join(out_dir, "images", f"{ids[i]}_clean.png"))
+                corr_pils[i].save(
+                    os.path.join(out_dir, "images", f"{ids[i]}_{img_name}.png")
+                )
+                json_path = os.path.join(out_dir, "texts", f"{ids[i]}_{txt_name}.json")
+                data = {
+                    "label": int(labels[i]),
+                    "label_pred_clean": int(clean_preds[i]),
+                    "label_pred_corr": int(corr_preds[i]),
+                    "clean_text": texts[i],
+                    "corr_txt": corr_texts[i],
+                }
 
-        # Searching for the best loss and saving best combination info
+                os.makedirs(os.path.dirname(json_path), exist_ok=True)
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+        # Searching for the best loss
         if loss_val.item() > best_loss:
             best_loss = loss_val.item()
             best_outputs = outputs.detach().clone()
-            best_images = corr_pils
-            best_texts = corr_texts
-            best_img_name = img_name
-            best_txt_name = txt_name
-
-    # Saving best images and texts from the batch with a 50% of probability
-    out_dir = os.path.join(OUTPUT_DIR, "black", "corr")
-    os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
-    os.makedirs(os.path.join(out_dir, "texts"), exist_ok=True)
-    for i in range(len(clean_preds)):
-        if int(clean_preds[i]) != int(corr_preds[i]):
-            best_images[i].save(
-                os.path.join(out_dir, "images", f"{ids[i]}_{best_img_name}.png")
-            )
-            json_path = os.path.join(
-                out_dir, "texts", f"{ids[i]}_{best_txt_name}.json"
-            )
-            data = {
-                "label": int(labels[i]),
-                "label_pred_clean": int(clean_preds[i]),
-                "label_pred_corr": int(corr_preds[i]),
-                "clean_text": texts[i],
-                "corr_txt": best_texts[i],
-            }
-
-            os.makedirs(os.path.dirname(json_path), exist_ok=True)
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
 
     return best_outputs
 
@@ -111,6 +120,7 @@ def white_box(
     model,
     tokenizer,
     processor,
+    accelerator,
     ids,
     texts,
     images,
@@ -129,6 +139,7 @@ def white_box(
         model,
         tokenizer,
         processor,
+        accelerator,
         images,
         texts,
         labels,
@@ -170,11 +181,10 @@ def white_box(
     os.makedirs(os.path.join(out_dir, "texts"), exist_ok=True)
     for i in range(len(clean_preds)):
         if int(clean_preds[i]) != int(corr_preds[i]):
-            best_images[i].save(
-                os.path.join(out_dir, "images", f"{ids[i]}.png")
-            )
+            images[i].save(os.path.join(out_dir, "images", f"{ids[i]}_clean.png"))
+            best_images[i].save(os.path.join(out_dir, "images", f"{ids[i]}.png"))
             json_path = os.path.join(
-                out_dir, "texts", f"{ids[i]}_{best_text_corruption}.json"
+                out_dir, "texts", f"{ids[i]}{best_text_corruption}.json"
             )
             data = {
                 "label": int(labels[i]),
@@ -213,12 +223,21 @@ def multimodal_attack(
 
     for ids, texts, images, labels in tqdm(loader, desc="Evaluating", leave=False):
         # ----- CLEAN FORWARD -----
-        clean_text_inputs = tokenizer(
-            texts,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
+        if DEBUG_MODE:
+            clean_text_inputs = tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=32,
+                return_tensors="pt",
+            )
+        else:
+            clean_text_inputs = tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
         clean_image_inputs = processor(images=images, return_tensors="pt")
         clean_image_inputs["pixel_values"] = clean_image_inputs[
             "pixel_values"
@@ -234,6 +253,7 @@ def multimodal_attack(
                 model,
                 tokenizer,
                 processor,
+                accelerator,
                 ids,
                 texts,
                 images,
@@ -246,6 +266,7 @@ def multimodal_attack(
                 model,
                 tokenizer,
                 processor,
+                accelerator,
                 ids,
                 texts,
                 images,
@@ -259,7 +280,7 @@ def multimodal_attack(
                 alpha_txt,
                 text_perturbation,
             )
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         corr_preds = [1 if i > 0.5 else 0 for i in clean_outputs]
         y_pred_corr.extend(corr_preds)
 
@@ -307,8 +328,6 @@ def multimodal_attack(
     print(
         f"Attack Success Rate (ASR): {robustness_metrics['attack_success_rate'] * 100:.2f}%, proportion of originally correct classifications that were flipped to an incorrect label"
     )
-    
-    
 
     plot_confusion_matrix(
         cm_clean,
@@ -344,6 +363,7 @@ def PGDattack(
     model,
     tokenizer,
     processor,
+    accelerator,
     images,
     texts,
     labels,
@@ -374,12 +394,21 @@ def PGDattack(
     images_clean["pixel_values"] = images_clean["pixel_values"].unsqueeze(1)
     pv = images_clean["pixel_values"].clone().detach()
 
-    texts_tok = tokenizer(
-        texts,
-        padding="max_length",
-        truncation=True,
-        return_tensors="pt",
-    )
+    if DEBUG_MODE:
+        texts_tok = tokenizer(
+            texts,
+            padding="max_length",
+            truncation=True,
+            max_length=32,
+            return_tensors="pt",
+        )
+    else:
+        texts_tok = tokenizer(
+            texts,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
     emb_baseline = model.emb(texts_tok["input_ids"]).detach()
 
     # ==============================================================
@@ -402,7 +431,7 @@ def PGDattack(
         ):
             cur_pv = pv + delta_img
 
-            with torch.enable_grad():
+            with accelerator.autocast():
                 logits = forward_pass_manual(model, cur_pv, emb_adv)
                 loss = loss_fn(logits, labels_tensor)
                 # print(f"Iteration {step}/{iters} | Loss: {loss.item():.4f}")
@@ -412,8 +441,12 @@ def PGDattack(
                 best_pv = cur_pv.detach().clone()
                 best_emb = emb_adv.detach().clone()
 
-            model.zero_grad()
-            loss.backward()
+            accelerator.backward(loss)
+            if accelerator.scaler is not None:
+                grad_img = delta_img.grad.detach()
+                accelerator.scaler._unscale_grads_(delta_img)
+                grad_img_unscaled = delta_img.grad.detach()
+                delta_img.grad.data = grad_img_unscaled
 
             # Update image perturbation (L_inf)
             with torch.no_grad():
@@ -421,6 +454,8 @@ def PGDattack(
                 delta_img.clamp_(-eps_img, eps_img)
             delta_img.grad.zero_()
 
+            if accelerator.scaler is not None:
+                accelerator.scaler._unscale_grads_(emb_adv)
             # Update text embeddings (L2)
             grad_emb = emb_adv.grad.detach()
             B, S, D = grad_emb.shape
@@ -440,6 +475,7 @@ def PGDattack(
                 emb_adv.data[exceed] = (
                     emb_baseline.data[exceed] + delta_e[exceed] * factor[:, None, None]
                 )
+            delta_img.grad.zero_()
             emb_adv.grad.zero_()
             # Free memory
             del logits, loss, cur_pv, grad_emb, delta_e, step_emb
@@ -486,12 +522,21 @@ def PGDattack(
             bar_format="{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
         ):
             corr_texts = txt_fun(texts)
-            texts_tok_corr = tokenizer(
-                corr_texts,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
-            )
+            if DEBUG_MODE:
+                texts_tok_corr = tokenizer(
+                    corr_texts,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=32,
+                    return_tensors="pt",
+                )
+            else:
+                texts_tok_corr = tokenizer(
+                    corr_texts,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                )
             emb_corr = model.emb(texts_tok_corr["input_ids"]).detach()
 
             with torch.no_grad():

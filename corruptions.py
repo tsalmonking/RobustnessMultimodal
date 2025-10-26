@@ -2,6 +2,8 @@ from PIL import Image, ImageEnhance, ImageFilter
 import random
 import numpy as np
 
+from config import DEBUG_MODE
+
 # --- IMAGES (PIL list) ---
 
 
@@ -60,15 +62,26 @@ def jpeg_compression(images, quality=50):
 
 
 # Dizionario corruzioni
-IMAGE_CORRUPTIONS = {
-    # "none": lambda x: x,
-    "noise": add_gaussian_noise,
-    "blur": blur,
-    "brightness": brightness,
-    "flip_h": flip_horizontal,
-    "flip_v": flip_vertical,
-    "jpeg": jpeg_compression,
-}
+if DEBUG_MODE:
+    IMAGE_CORRUPTIONS = {
+        # "none": lambda x: x,
+        "noise": add_gaussian_noise,
+        "blur": blur,
+        # "brightness": brightness,
+        # "flip_h": flip_horizontal,
+        # "flip_v": flip_vertical,
+        # "jpeg": jpeg_compression,
+    }
+else:
+    IMAGE_CORRUPTIONS = {
+        # "none": lambda x: x,
+        "noise": add_gaussian_noise,
+        "blur": blur,
+        "brightness": brightness,
+        "flip_h": flip_horizontal,
+        "flip_v": flip_vertical,
+        "jpeg": jpeg_compression,
+    }
 
 # --- TESTO (stringhe) ---
 
@@ -129,10 +142,19 @@ def repeat_word(texts):
 
 
 # Standard text perturbations
-TEXT_PERTURBATIONS = {
-    # "none": lambda t: t,
-    "drop_word": drop_random_word,
-    "case": random_case,
-    "swap": swap_adjacent_words,
-    "repeat": repeat_word,
-}
+if DEBUG_MODE:
+    TEXT_PERTURBATIONS = {
+        # "none": lambda t: t,
+        # "drop_word": drop_random_word,
+        "case": random_case,
+        # "swap": swap_adjacent_words,
+        # "repeat": repeat_word,
+    }
+else:
+    TEXT_PERTURBATIONS = {
+        # "none": lambda t: t,
+        "drop_word": drop_random_word,
+        "case": random_case,
+        "swap": swap_adjacent_words,
+        "repeat": repeat_word,
+    }

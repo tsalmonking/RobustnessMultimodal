@@ -8,11 +8,14 @@ from accelerate import Accelerator
 from dataset import RecoveryDataset
 from utils import multimodal_collate, load_model
 from attacks import multimodal_attack
-from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, OUTPUT_DIR
+from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, OUTPUT_DIR, DEBUG_MODE
 
 # PGD default parameters
-ITERS = 80
-EPS_IMG = 8 / 255.0
+if DEBUG_MODE:
+    ITERS = 2
+else:
+    ITERS = 80
+EPS_IMG = 4 / 255.0
 ALPHA_IMG = EPS_IMG / (ITERS * 1.25)
 EPS_TEXT = 5.0
 ALPHA_TEXT = EPS_TEXT / (ITERS * 1.0)
@@ -43,7 +46,10 @@ args = parser.parse_args()
 DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
-BATCH_SIZE = 16
+if DEBUG_MODE:
+    BATCH_SIZE = 4
+else:
+    BATCH_SIZE = 16
 
 
 # Main evaluation loop
@@ -65,11 +71,17 @@ def main():
     dataset = RecoveryDataset(csv_file=DATA_CSV, image_dir=IMAGES_DIR)
 
     # for debug loader gets smaller
-    #subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 170)))
-    # DataLoader for batching
-    loader = DataLoader(
-        dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
+    subset = torch.utils.data.Subset(dataset, list(range(len(dataset) // 100)))
+
+    if DEBUG_MODE:
+        loader = DataLoader(
+        subset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
     )
+    else:
+        # DataLoader for batching
+        loader = DataLoader(
+            dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
+        )
 
     # Preparing for processing optimizating GPU use
     model, loader = accelerator.prepare(model, loader)
