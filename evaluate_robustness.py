@@ -80,7 +80,7 @@ def main():
     else:
         # DataLoader for batching
         loader = DataLoader(
-            dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
+            subset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=multimodal_collate
         )
 
     # Preparing for processing optimizating GPU use
