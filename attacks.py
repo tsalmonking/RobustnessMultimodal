@@ -71,7 +71,7 @@ def black_box(
             corr_text_inputs = tokenizer(
                 corr_texts,
                 padding="max_length",
-                max_length=450,
+                max_length=500,
                 truncation=True,
                 return_tensors="pt",
             )
@@ -236,7 +236,7 @@ def multimodal_attack(
             clean_text_inputs = tokenizer(
                 texts,
                 padding="max_length",
-                max_length=450,
+                max_length=500,
                 truncation=True,
                 return_tensors="pt",
             )
@@ -409,7 +409,7 @@ def PGDattack(
             texts,
             padding="max_length",
             truncation=True,
-            max_length=450,
+            max_length=500,
             return_tensors="pt",
         )
     emb_baseline = model.emb(texts_tok["input_ids"]).detach()
@@ -533,7 +533,7 @@ def PGDattack(
                 texts_tok_corr = tokenizer(
                     corr_texts,
                     padding="max_length",
-                    max_length=450,
+                    max_length=500,
                     truncation=True,
                     return_tensors="pt",
                 )
