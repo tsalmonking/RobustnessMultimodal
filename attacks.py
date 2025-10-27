@@ -64,7 +64,7 @@ def black_box(
                 corr_texts,
                 padding="max_length",
                 truncation=True,
-                max_length=32,
+                max_length=450,
                 return_tensors="pt",
             )
         else:
@@ -221,14 +221,14 @@ def multimodal_attack(
     y_true = []
     y_pred_clean, y_pred_corr = [], []
 
-    for ids, texts, images, labels in tqdm(loader, desc="Evaluating", leave=False):
+    for ids, texts, images, labels in tqdm(loader, desc="Evaluating"):
         # ----- CLEAN FORWARD -----
         if DEBUG_MODE:
             clean_text_inputs = tokenizer(
                 texts,
                 padding="max_length",
                 truncation=True,
-                max_length=32,
+                max_length=450,
                 return_tensors="pt",
             )
         else:
@@ -399,7 +399,7 @@ def PGDattack(
             texts,
             padding="max_length",
             truncation=True,
-            max_length=32,
+            max_length=450,
             return_tensors="pt",
         )
     else:
@@ -443,10 +443,8 @@ def PGDattack(
 
             accelerator.backward(loss)
             if accelerator.scaler is not None:
-                grad_img = delta_img.grad.detach()
-                accelerator.scaler._unscale_grads_(delta_img)
-                grad_img_unscaled = delta_img.grad.detach()
-                delta_img.grad.data = grad_img_unscaled
+                scale = accelerator.scaler.get_scale()
+                delta_img.grad.data = delta_img.grad.data / scale
 
             # Update image perturbation (L_inf)
             with torch.no_grad():
@@ -455,7 +453,8 @@ def PGDattack(
             delta_img.grad.zero_()
 
             if accelerator.scaler is not None:
-                accelerator.scaler._unscale_grads_(emb_adv)
+                scale = accelerator.scaler.get_scale()
+                emb_adv.grad.data = emb_adv.grad.data / scale
             # Update text embeddings (L2)
             grad_emb = emb_adv.grad.detach()
             B, S, D = grad_emb.shape
@@ -477,9 +476,6 @@ def PGDattack(
                 )
             delta_img.grad.zero_()
             emb_adv.grad.zero_()
-            # Free memory
-            del logits, loss, cur_pv, grad_emb, delta_e, step_emb
-            torch.cuda.empty_cache()
 
         # Fallback in case best values were never updated
         if best_pv is None or best_emb is None:
@@ -527,7 +523,7 @@ def PGDattack(
                     corr_texts,
                     padding="max_length",
                     truncation=True,
-                    max_length=32,
+                    max_length=450,
                     return_tensors="pt",
                 )
             else:
@@ -582,8 +578,6 @@ def PGDattack(
                 eps_img,
             )
             delta_img.grad.zero_()
-            del logits, loss, cur_pv
-            torch.cuda.empty_cache()
 
         images_adv = {"pixel_values": (pv + delta_img).detach().clone()}
         text_adv = best_text_tok

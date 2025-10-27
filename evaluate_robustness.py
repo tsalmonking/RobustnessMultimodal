@@ -47,7 +47,7 @@ DATASET_PATH = "Data/ReCOVery"
 DATA_CSV = os.path.join(DATASET_PATH, "recovery.csv")
 IMAGES_DIR = os.path.join(DATASET_PATH, "images")
 if DEBUG_MODE:
-    BATCH_SIZE = 4
+    BATCH_SIZE = 2
 else:
     BATCH_SIZE = 16
 
