@@ -379,7 +379,7 @@ def PGDattack(
     Perform multimodal PGD adversarial attack on both image and text embeddings (optional).
     If text_perturbation == "False", applies PGD only on the image and selects the worst textual corruption.
     """
-
+    model = model.module if hasattr(model, "module") else model
     model.eval()
     loss_fn = torch.nn.BCEWithLogitsLoss()
     labels_tensor = torch.tensor(labels, device=device).float()
