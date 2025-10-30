@@ -18,7 +18,7 @@ from config import NAME_LLM, NAME_IMG_EMBED
 from prompt import LLM_CORRUPTER_PROMPT
 from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
-BATCH_SIZE = 2
+BATCH_SIZE = 16
 N_TOKENS = 512
 
 # PGD
