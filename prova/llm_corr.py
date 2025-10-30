@@ -154,7 +154,7 @@ def main():
     
     subset = torch.utils.data.Subset(dataset_test, list(range(len(dataset_test) // 70)))
     
-    dataloader_test = DataLoader(subset, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
+    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
 
     preds = []
     accumulated_labels = []
