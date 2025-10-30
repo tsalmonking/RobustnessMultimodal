@@ -19,7 +19,7 @@ from prompt import LLM_CORRUPTER_PROMPT
 from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
 BATCH_SIZE = 16
-N_TOKENS = 512
+N_TOKENS = 1024
 
 # PGD
 PGD_ITERS = 20
