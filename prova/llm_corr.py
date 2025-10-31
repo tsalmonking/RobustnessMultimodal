@@ -18,7 +18,7 @@ from config import NAME_LLM, NAME_IMG_EMBED
 from prompt import LLM_CORRUPTER_PROMPT
 from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 N_TOKENS = 1024
 
 # PGD
@@ -57,6 +57,8 @@ def use_model(model, tokenizer, processor, news):
         process_img["pixel_values"] = process_img["pixel_values"].unsqueeze(1)
     else:
         process_img = {"pixel_values": news["img"]}
+        if process_img["pixel_values"].dim() == 4:  # aggiungi questa riga
+            process_img["pixel_values"] = process_img["pixel_values"].unsqueeze(1)
 
     # Using the model
     with torch.no_grad():
