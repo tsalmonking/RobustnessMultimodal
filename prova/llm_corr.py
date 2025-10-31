@@ -18,8 +18,8 @@ from config import NAME_LLM, NAME_IMG_EMBED
 from prompt import LLM_CORRUPTER_PROMPT
 from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
-BATCH_SIZE = 4
-N_TOKENS = 256
+BATCH_SIZE = 8
+N_TOKENS = 1024
 
 # PGD
 PGD_ITERS = 20
@@ -157,7 +157,7 @@ def main():
     
     subset = torch.utils.data.Subset(dataset_test, list(range(len(dataset_test) // 10)))
     
-    dataloader_test = DataLoader(subset, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
+    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
 
     preds = []
     accumulated_labels = []
