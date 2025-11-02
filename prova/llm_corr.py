@@ -18,17 +18,32 @@ from config import NAME_LLM, NAME_IMG_EMBED
 from prompt import LLM_CORRUPTER_PROMPT
 from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
-BATCH_SIZE = 8
-N_TOKENS = 1024
+DEBUG = False
 
-# PGD
-PGD_ITERS = 20
-EPSILON = 4 / 255
-ALPHA = EPSILON / (PGD_ITERS * 2.0)
+if DEBUG:
+    BATCH_SIZE = 8
+    N_TOKENS = 128
 
-# DeepFool
-DF_ITERS = 200
-OVERSHOOT = 0.003
+    # PGD
+    PGD_ITERS = 18
+    EPSILON = 6 / 255
+    ALPHA = EPSILON / (PGD_ITERS * 2.0)
+
+    # DeepFool
+    DF_ITERS = 100
+    OVERSHOOT = 0.005
+else:
+    BATCH_SIZE = 32
+    N_TOKENS = 1024
+
+    # PGD
+    PGD_ITERS = 18
+    EPSILON = 6 / 255
+    ALPHA = EPSILON / (PGD_ITERS * 2.0)
+
+    # DeepFool
+    DF_ITERS = 200
+    OVERSHOOT = 0.005
 
 class WrappedModel(torch.nn.Module):
     def __init__(self, model, fixed_txt, processor):
@@ -57,7 +72,7 @@ def use_model(model, tokenizer, processor, news):
         process_img["pixel_values"] = process_img["pixel_values"].unsqueeze(1)
     else:
         process_img = {"pixel_values": news["img"]}
-        if process_img["pixel_values"].dim() == 4:  # aggiungi questa riga
+        if process_img["pixel_values"].dim() == 4:
             process_img["pixel_values"] = process_img["pixel_values"].unsqueeze(1)
 
     # Using the model
@@ -70,6 +85,7 @@ def use_model(model, tokenizer, processor, news):
 def save_img(img, save_path):
     to_pil = T.ToPILImage()
     to_pil(img.squeeze(0).cpu().float()).save(save_path)
+
 
 def img_corruption(model, tokenizer, processor, news, type_attack, label):
     token_txt = tokenizer(news["txt"], return_tensors="pt", padding='max_length', truncation=True, return_attention_mask=False, max_length=N_TOKENS)
@@ -89,27 +105,24 @@ def img_corruption(model, tokenizer, processor, news, type_attack, label):
 
     return corr_news, ssim_val, process_img["pixel_values"]
 
-def txt_corruption(news):
+def txt_corruption(news, current_label="real", target_label="fake"):
+    prompt = LLM_CORRUPTER_PROMPT.format(
+        current_label=current_label,
+        target_label=target_label
+    ) + "\n\nOriginal News:\n" + news["txt"]
     response = ollama.chat(
         model="phi3:instruct",
         options={
-            "temperature": 0.5,
+            "temperature": 0.5
         },
         messages=[
             {
-                "role": "system",
-                "content": (
-                    "You are a professional adversarial news rewriter. "
-                    "Your goal is to subtly modify a news passage to challenge a fake news detector "
-                    "while keeping all factual details intact."
-                )
-            },
-            {
                 "role": "user",
-                "content": LLM_CORRUPTER_PROMPT + news["txt"]
+                "content": prompt
             }
         ]
     )
+
     corr_txt = response["message"]["content"].strip()
 
     corr_news = {
@@ -118,26 +131,26 @@ def txt_corruption(news):
     }
     return corr_news
 
-def save_results(idx, news, clean_img, img_corr_news_pgd, img_corr_news_df, preds, ssim_pgd, ssim_df):
-    os.makedirs("results", exist_ok=True)
-    result_dir = f"results/{idx}"
+
+def save_results(idx, news, clean_img, img_corr_news_pgd, multimodal_corr_news, preds, ssim_pgd, ssim_df):
+    result_dir = os.path.join("results", str(idx))
     os.makedirs(result_dir, exist_ok=True)
 
     save_img(clean_img, os.path.join(result_dir, "clean_img.png"))
     save_img(img_corr_news_pgd["img"], os.path.join(result_dir, "pgd_img.png"))
-    save_img(img_corr_news_df["img"], os.path.join(result_dir, "deepfool_img.png"))
+    save_img(multimodal_corr_news["img"], os.path.join(result_dir, "deepfool_img.png"))
 
     result_data = {
-        "index": idx,
-        "true_label": preds["label_true"],
-        "pred_clean": preds["clean"],
-        "pred_img_corr": preds["img_corr"],
-        "pred_txt_corr": preds["txt_corr"],
-        "pred_multimodal_corr": preds["multimodal_corr"],
-        "SSIM_pgd": ssim_pgd,
-        "SSIM_deepfool": ssim_df,
+        "index": int(idx),
+        "true_label": int(preds["label_true"]),
+        "pred_clean": int(preds["clean"]),
+        "pred_img_corr": int(preds["img_corr"]),
+        "pred_txt_corr": int(preds["txt_corr"]),
+        "pred_multimodal_corr": int(preds["multimodal_corr"]),
+        "SSIM_pgd": float(ssim_pgd.item() if hasattr(ssim_pgd, "item") else ssim_pgd),
+        "SSIM_deepfool": float(ssim_df.item() if hasattr(ssim_df, "item") else ssim_df),
         "original_txt": news["txt"],
-        "corr_txt": img_corr_news_pgd["txt"]
+        "corr_txt": multimodal_corr_news["txt"]
     }
 
     with open(os.path.join(result_dir, "result.json"), "w") as f:
@@ -157,7 +170,10 @@ def main():
     
     subset = torch.utils.data.Subset(dataset_test, list(range(len(dataset_test) // 10)))
     
-    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
+    if DEBUG:
+        dataloader_test = DataLoader(subset, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
+    else:
+        dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False,generator=torch.Generator(device='cuda'))
 
     preds = []
     accumulated_labels = []
@@ -169,17 +185,18 @@ def main():
 
         preds = [1 if i > 0.5 else 0 for i in preds]
     
-    for i, (pred, label) in tqdm(enumerate(zip(preds, accumulated_labels)), desc="Looking for a multimodality change", leave=False):
+    ssim_deepfool_values = []
+    for i, (pred, label) in tqdm(enumerate(zip(preds, accumulated_labels)), total=len(preds), desc="Looking for a multimodality change"):
         if pred == label:
             news = {
                 "txt": dataset_test.texts[i],
                 "img": Image.open(os.path.join(dataset_test.img_dir, dataset_test.imgs_path[i])).convert("RGB")
             }
             img_corr_news_pgd, ssim_pgd, _ = img_corruption(model, tokenizer, processor, news, "pgd", torch.tensor([label]))
-            txt_corr_news = txt_corruption(news)
+            txt_corr_news = txt_corruption(news, current_label="real" if label == 1 else "fake", target_label="fake" if label == 1 else "real")
             multimodal_corr_news, ssim_df, process_img = img_corruption(model, tokenizer, processor, txt_corr_news, "deepfool", torch.tensor([label]))
+            ssim_deepfool_values.append(ssim_df)
 
-            #pred = use_model(model, tokenizer, processor, news)[0]
             img_corr_pred= use_model(model, tokenizer, processor, img_corr_news_pgd)[0]
             txt_corr_pred = use_model(model, tokenizer, processor, txt_corr_news)[0]
             multimodal_corr_pred = use_model(model, tokenizer, processor, multimodal_corr_news)[0]
@@ -194,8 +211,15 @@ def main():
                         "multimodal_corr": multimodal_corr_pred
                     },
                     ssim_pgd=ssim_pgd,
-                    ssim_df=ssim_df
+                    ssim_df=ssim_df,
                 )
+    
+    if len(ssim_deepfool_values) > 0:
+        ssim_tensor = torch.tensor(ssim_deepfool_values)
+        print("\nDeepFool SSIM Statistics:")
+        print(f"  → Mean:  {ssim_tensor.mean().item():.4f}")
+        print(f"  → Min:   {ssim_tensor.min().item():.4f}")
+        print(f"  → Max:   {ssim_tensor.max().item():.4f}")
 
 if __name__ == "__main__":
     main()
