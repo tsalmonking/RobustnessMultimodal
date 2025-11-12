@@ -24,7 +24,7 @@ from utils import (
     txt_corruption,
 )
 from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, DEBUG, OUTPUT_DIR
-from datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
+from my_datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
 
 # Configurations with debug options
 if DEBUG:
