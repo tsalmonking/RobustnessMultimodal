@@ -1,6 +1,6 @@
 # RobustnessMultimodal
 
-Official repository for evaluating the **multimodal robustness** of the *Themis* model through adversarial attacks on both text and image inputs.
+Official repository for evaluating the **multimodal robustness** of the Themis model through adversarial attacks on both text and image inputs.
 
 ---
 
@@ -154,7 +154,7 @@ All results (confusion matrices, metrics, and JSON logs) will be automatically s
 ---
 
 ## Dataset and Model
-**Dataset:** ReCOVery, adapted following Is-It-Fake-Or-Not.
+**Dataset:** ReCOVery, adapted following Is-It-Fake-Or-Not https://github.com/demon-prin/Is-It-Fake-Or-Not.
 
 **Model:** Themis (OpenCLIP ViT-B/16 variant). Model weights must be trained or requested separately.
 
