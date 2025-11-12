@@ -30,8 +30,8 @@ If you don't already have Python 3.10 installed, you can easily set it up using 
 #### Install pyenv (Linux/MacOS)
 pyenv should be already available, install Python 3.10 and set it as your active version:
 ```bash
-pyenv install 3.10.13
-pyenv local 3.10.13
+pyenv install 3.10
+pyenv local 3.10
 ```
 
 #### Install pyenv (Windows)
@@ -43,14 +43,14 @@ setx PATH "%USERPROFILE%\.pyenv\pyenv-win\bin;%USERPROFILE%\.pyenv\pyenv-win\shi
 
 Then in PowerShell:
 ```powershell
-pyenv install 3.10.13
-pyenv local 3.10.13
+pyenv install 3.10
+pyenv local 3.10
 ```
 
 After this, verify that the correct Python version is active:
 ```bash
 python --version
-# Should print Python 3.10.13
+# Should print Python 3.10.x
 ```
 
 ---
