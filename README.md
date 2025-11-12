@@ -10,7 +10,6 @@ Official repository for evaluating the **multimodal robustness** of the *Themis*
 - torch 2.1.2
 - torchvision 0.16.2
 - numpy 1.26.4
-- accelerate (for distributed or multi-GPU execution)
 
 ---
 
@@ -78,7 +77,7 @@ Install the base packages:
 pip install -r requirements.txt
 ```
 
-Install specific versions of PyTorch and Torchvision with CUDA 11.8 support:
+Install specific versions of PyTorch and Torchvision. For CUDA 11.8 versions are the following:
 ```bash
 pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
 ```
@@ -99,66 +98,68 @@ You must manually create the following folders before running the code:
 
 ---
 
-### Step 6: Configure Accelerate
-
-Before using **Accelerate**, run the configuration wizard to set up your environment:
-
-```bash
-accelerate config
-```
-
-Recommended answers for a common single-node multi-GPU machine:
-- Compute environment: `LOCAL_MACHINE`
-- Number of machines: `1`
-- Machine rank: `0`
-- Use DeepSpeed: `no`
-- Use FP16 / mixed precision: `yes` (or `no` if unsupported)
-- Number of processes: equal to the number of GPUs you want to use
-
-This will create a configuration file that Accelerate will automatically use.
-
-Alternatively, you can create a custom configuration file, for example:
-
-**accelerate_config.yaml**
-```yaml
-compute_environment: LOCAL_MACHINE
-distributed_type: MULTI_GPU
-num_machines: 1
-num_processes: 4
-machine_rank: 0
-mixed_precision: fp16
-use_cpu: false
-```
-
-You can then launch the program using:
-```bash
-accelerate launch --config_file accelerate_config.yaml evaluate_robustness.py
-```
-
----
-
 ### Step 7: Running the attack on Themis
 
 Once the folders are created and all dependencies are installed, you can run the multimodal robustness evaluation with:
 
 ```bash
-python evaluate_robustness.py
+python eval.py
 ```
 
-If you want to use **Accelerate** for multi-GPU or distributed execution, use:
+By default, this will execute the full pipeline with predefined parameters and save the results to the `results/` directory.
 
+**Optional arguments**
+You can customize the execution by passing arguments directly from the command line:
 ```bash
-accelerate launch evaluate_robustness.py
+python eval.py \\
+  --name_llm \"phi3:instruct\" \\
+  --name_img_embed \"openclip-ViT-B-16\" \\
+  --batch_size 8 \\
+  --model_path \"model/themis_weights.pt\" \\
+  --n_tokens 128 \\
+  --pgd_iters 30 \\
+  --epsilon 0.0078 \\
+  --alpha_factor 2.0 \\
+  --dataset_path \"Data/ReCOVery/test.csv\" \\
+  --images_path \"Data/ReCOVery/images\" \\
+  --results_path \"results/\"
 ```
 
-The evaluation results will be saved in the **`results/`** directory.
+**Available parameters**
+
+| Argument | Type | Description |
+| :--- | :--- | :--- |
+| `--name_llm` | str | Language model used for text corruption (default: Phi-3:instruct) |
+| `--name_img_embed` | str | Image encoder name (default: OpenCLIP ViT-B/16 variant) |
+| `--batch_size` | int | Batch size for evaluation |
+| `--model_path` | str | Path to the model weights |
+| `--n_tokens` | int | Maximum token length for text encoder |
+| `--merge_tokens` | int | Token merging factor (optional, usually left at 0) |
+| `--use_lora` | bool | Enable LoRA fine-tuning (optional) |
+| `--lora_alpha`, `--lora_r`, `--lora_dropout` | various | LoRA configuration options — see Themis documentation for details |
+| `--set_params` | bool | Whether to use default model parameters (default: True) |
+| `--pgd_iters` | int | Number of PGD iterations (default: 30) |
+| `--epsilon` | float | Maximum perturbation magnitude (default: 2/255) |
+| `--alpha_factor` | float | Step size scaling factor for PGD |
+| `--dataset_path` | str | Path to the dataset CSV file |
+| `--images_path` | str | Path to the image folder |
+| `--results_path` | str | Output directory for evaluation results |
+
+**Example run**
+```bash
+python eval.py --pgd_iters 30 --epsilon 0.0078 --alpha_factor 2.0 --batch_size 8
+```
+All results (confusion matrices, metrics, and JSON logs) will be automatically saved under the `results/` directory.
 
 ---
+
+## Dataset and Model
+**Dataset:** ReCOVery, adapted following Is-It-Fake-Or-Not.
+
+**Model:** Themis (OpenCLIP ViT-B/16 variant). Model weights must be trained or requested separately.
 
 ## Original repository
-[https://github.com/Davi2082/RobustnessMultimodal](https://github.com/Davi2082/RobustnessMultimodal)
-
----
+https://github.com/Davi2082/RobustnessMultimodal
 
 ## License
-This project is distributed under the MIT License.
+Distributed under the MIT License.
