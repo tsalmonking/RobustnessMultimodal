@@ -153,6 +153,12 @@ All results (confusion matrices, metrics, and JSON logs) will be automatically s
 
 ---
 
+## Experiments
+The main results of the experiments described in the thesis are available in the [`experiments/`] folder.
+Each subfolder includes a `README.md` file that documents the parameters, metrics, and observations related to each run.
+
+---
+
 ## Dataset and Model
 **Dataset:** ReCOVery, adapted following Is-It-Fake-Or-Not https://github.com/demon-prin/Is-It-Fake-Or-Not.
 
