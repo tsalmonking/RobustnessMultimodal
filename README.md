@@ -89,12 +89,45 @@ pip install numpy==1.26.4
 
 ---
 
-### Step 5: Folder setup
+### Step 5: Folder and Dataset setup
 
-You must manually create the following folders before running the code:
+Before running the code, you need to set up the dataset structure and model weights:
 
-- `Data/ReCOVery/images/` → place the images to be used here  
-- `model/` → place the model weights to be tested here
+#### Dataset Structure
+Create a folder in the `data/` directory for each dataset you want to test. Each dataset folder must contain:
+- `images/` → subdirectory containing all dataset images
+- `test.*` → test annotations file (can be `.csv`, `.tsv`, or other formats)
+- Additional annotation files as needed (e.g., `train.*`, `val.*`)
+
+**Example structure:**
+```
+Data/
+├── Fakeddit/
+│   ├── images/
+│   │   ├── test/
+│   │   ├── train/
+│   │   └── val/
+│   ├── test.tsv
+│   ├── train.tsv
+│   └── val.tsv
+├── Recovery/
+│   ├── images/
+│   ├── test.csv
+│   └── ...
+└── YourNewDataset/
+    ├── images/
+    ├── test.csv
+    └── ...
+```
+
+#### Dataset Class Definition
+For each new dataset added to `data/`, you must define the corresponding class and load function in `my_datasets.py`:
+
+1. Create a class named `{DatasetName}_Dataset` (e.g., `YourNewDataset_Dataset`)
+2. Create a function named `{datasetname}_load_annotations_file()` (e.g., `yournewdataset_load_annotations_file()`)
+
+#### Model Weights
+You must place your pretrained model weights in the `model/` directory
 
 ---
 

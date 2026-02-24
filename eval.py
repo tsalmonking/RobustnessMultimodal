@@ -23,8 +23,8 @@ from utils import (
     img_corruption,
     txt_corruption,
 )
-from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, DEBUG, OUTPUT_DIR
-from my_datasets import get_dataset, Recovery_Dataset, recovery_load_annotations_file
+from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH, DEBUG
+import my_datasets
 
 # Configurations with debug options
 if DEBUG:
@@ -39,8 +39,22 @@ else:
     N_TOKENS = 1024
 
     # PGD
-    PGD_ITERS = 30
-    EPSILON = 2 / 255
+    PGD_ITERS = 25
+    EPSILON = 3 / 255
+
+# Get available datasets from Data directory
+available_datasets = [d for d in os.listdir("data") if os.path.isdir(os.path.join("data", d))]
+# Create mappings dynamically
+dataset_classes = {}
+load_functions = {}
+for dataset in available_datasets:
+    class_name = f"{dataset}_Dataset"
+    load_name = f"{dataset.lower()}_load_annotations_file"
+    try:
+        dataset_classes[dataset] = getattr(my_datasets, class_name)
+        load_functions[dataset] = getattr(my_datasets, load_name)
+    except AttributeError:
+        print(f"Warning: Class {class_name} or function {load_name} not found in my_datasets.py for dataset {dataset}")
 
 # Main evaluation function
 def main():
@@ -60,22 +74,26 @@ def main():
     parser.add_argument("--pgd_iters", type=int, default=PGD_ITERS)
     parser.add_argument("--epsilon", type=float, default=EPSILON)
     parser.add_argument("--alpha_factor", type=float, default=2.0)
-    parser.add_argument("--results_path", type=str, default=OUTPUT_DIR)
-    parser.add_argument("--dataset_path", type=str, default="Data/ReCOVery/test.csv")
-    parser.add_argument("--images_path", type=str, default="Data/ReCOVery/images")
+    parser.add_argument("--results_path", type=str, default="results")
+    parser.add_argument("--dataset", type=str, default="Fakeddit", choices=list(dataset_classes.keys()))
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, processor = load_model(device, args)
 
-    dataset_test = get_dataset(
-        Recovery_Dataset,
-        recovery_load_annotations_file,
+    # Select dataset class and load function dynamically
+    dataset_class = dataset_classes[args.dataset]
+    load_func = load_functions[args.dataset]
+    output_dir = os.path.join(args.results_path, f"{args.dataset}")
+
+    dataset_test = my_datasets.get_dataset(
+        dataset_class,
+        load_func,
         N_TOKENS,
         processor,
         tokenizer,
-        args.dataset_path,
-        args.images_path,
+        f"data/{args.dataset}/test.{r'.*'}",
+        f"data/{args.dataset}/images",
     )
     
     dataloader_test = DataLoader(
@@ -125,7 +143,7 @@ def main():
                 # Save results where only multimodality corruption fools the model
                 if (img_corr_pred == label and txt_corr_pred == label and multimodal_corr_pred != label):
                     save_results(
-                        args.results_path,
+                        output_dir,
                         indices[i],
                         news,
                         proccess_img,
@@ -187,8 +205,8 @@ def main():
     multimodal_robustness_metrics = compute_robustness_metrics(y_true, y_preds, y_multimodal_corr_preds)
 
     # Save results
-    clean_dir = os.path.join(args.results_path, "clean")
-    corr_dir = os.path.join(args.results_path, "corr")
+    clean_dir = os.path.join(output_dir, "clean")
+    corr_dir = os.path.join(output_dir, "corr")
     os.makedirs(clean_dir, exist_ok=True)
     os.makedirs(corr_dir, exist_ok=True)
     with open(os.path.join(clean_dir, "metrics_clean.json"), "w") as f:
@@ -246,7 +264,7 @@ def main():
     print(tabulate(data, headers, tablefmt="github"))
 
     # Save robustness metrics and confusion matrices of each modality
-    robustness_dir = os.path.join(args.results_path, "robustness")
+    robustness_dir = os.path.join(output_dir, "robustness")
     os.makedirs(robustness_dir, exist_ok=True)
     with open(os.path.join(robustness_dir, "txt_robustness.json"), "w") as f:
         json.dump(txt_robustness_metrics, f, indent=4)
