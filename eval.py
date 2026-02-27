@@ -105,7 +105,6 @@ def main():
 
     y_true = []
     y_preds, y_txt_corr_preds, y_img_corr_preds, y_multimodal_corr_preds = ([], [], [], [])
-    txt_similarity = 0.0
     for images, labels, text, _, indices in tqdm(dataloader_test, desc="Evaluating", total=len(dataloader_test)):
         corr_txts_list = []
         corr_imgs_pil_list = []
@@ -127,6 +126,7 @@ def main():
                 }
                 img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label]))
                 # Ensure text corruption is significant
+                txt_similarity = 0.0
                 while txt_similarity < 0.5:
                     txt_corr_news, txt_similarity = txt_corruption(news)
                 # Create multimodal corrupted news
