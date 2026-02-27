@@ -174,9 +174,8 @@ python eval.py \\
 | `--pgd_iters` | int | Number of PGD iterations (default: 30) |
 | `--epsilon` | float | Maximum perturbation magnitude (default: 2/255) |
 | `--alpha_factor` | float | Step size scaling factor for PGD |
-| `--dataset_path` | str | Path to the dataset CSV file |
-| `--images_path` | str | Path to the image folder |
 | `--results_path` | str | Output directory for evaluation results |
+| `--dataset` | str | Name of the dataset to evaluate. Must match one of the available dataset folders inside `data/`. Default: `Fakeddit` |
 
 **Example run**
 ```bash
