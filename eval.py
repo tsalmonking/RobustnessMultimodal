@@ -4,6 +4,7 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
 import json
+import glob
 import argparse
 import torchvision.transforms as T
 
@@ -92,7 +93,7 @@ def main():
         N_TOKENS,
         processor,
         tokenizer,
-        f"data/{args.dataset}/test.{r'.*'}",
+        glob.glob(f"data/{args.dataset}/test.*")[0],
         f"data/{args.dataset}/images",
     )
     
