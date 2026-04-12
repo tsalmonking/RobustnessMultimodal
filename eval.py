@@ -8,6 +8,8 @@ import glob
 import argparse
 import torchvision.transforms as T
 
+import datetime
+
 from torch.utils.data import DataLoader
 from PIL import Image
 from tqdm import tqdm
@@ -29,7 +31,7 @@ import my_datasets
 
 # Configurations with debug options
 if DEBUG:
-    BATCH_SIZE = 8
+    BATCH_SIZE = 16
     N_TOKENS = 128
 
     # PGD
@@ -100,8 +102,8 @@ def main():
     dataloader_test = DataLoader(
         dataset_test,
         batch_size=args.batch_size,
-        shuffle=True,
-        generator=torch.Generator(device="cuda"),
+        shuffle=False,
+        #generator=torch.Generator(device=device),
     )
 
     y_true = []
@@ -118,19 +120,31 @@ def main():
             y_true.extend(labels.cpu().numpy())
         # Challenging the model
         for i, (pred, label) in tqdm(enumerate(zip(preds, labels.cpu().numpy().tolist())), desc="Challenging the model", total=len(labels), leave=False):
+            # Clean news
+            news = {
+                "txt": dataset_test.texts[indices[i]],
+                "img": Image.open(os.path.join(dataset_test.img_dir, dataset_test.imgs_path[indices[i]])).convert("RGB"),
+            }
             # Only consider correctly classified samples
             if pred == label:
-                # Clean news
-                news = {
-                    "txt": dataset_test.texts[indices[i]],
-                    "img": Image.open(os.path.join(dataset_test.img_dir, dataset_test.imgs_path[indices[i]])).convert("RGB"),
-                }
-                img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label]))
+                img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label], device=device))
                 # Ensure text corruption is significant
+                counter = 0
                 txt_similarity = 0.0
-                while txt_similarity < 0.5:
-                    txt_corr_news, txt_similarity = txt_corruption(news)
-                # Create multimodal corrupted news
+                # Print time and similarity for each attempt in a log file
+                start = datetime.datetime.now().replace(microsecond=0)
+                while txt_similarity < 0.5 and counter < 5:
+                    new_txt_corr_news, new_txt_similarity = txt_corruption(news)
+                    if new_txt_similarity > txt_similarity:
+                        txt_corr_news = new_txt_corr_news
+                        txt_similarity = new_txt_similarity
+                    counter += 1
+                finish = datetime.datetime.now().replace(microsecond=0)
+                table = tabulate([[indices[i], start, finish, txt_similarity]], tablefmt="github")
+                with open("log.txt", "a") as f:
+                    f.write(table + "\n")
+
+                # Create multimodal corrupted new
                 multimodal_corr_news = {
                     "txt": txt_corr_news["txt"],
                     "img": img_corr_news["img"],
@@ -160,9 +174,15 @@ def main():
                         ssim_pgd=ssim_pgd,
                         txt_similarity=txt_similarity,
                     )
-            # Prepare corrupted samples for batch evaluation
-            to_pil = T.ToPILImage()
-            img_corr = to_pil(img_corr_news["img"].squeeze(0).cpu())    
+                # Prepare corrupted samples for batch evaluation
+                to_pil = T.ToPILImage()
+                img_corr = to_pil(img_corr_news["img"].squeeze(0).cpu())
+            else:
+                img_corr = news["img"]
+                txt_corr_news = news
+                txt_similarity = 1.0
+                ssim_pgd = 1.0
+            
             corr_txts_list.append(txt_corr_news["txt"])
             corr_imgs_pil_list.append(img_corr)
 
@@ -172,8 +192,8 @@ def main():
 
         # Processing of corrupted images
         corr_imgs = processor(images=corr_imgs_pil_list, return_tensors="pt", do_normalize=False)
-        mean = torch.tensor(processor.image_mean, device='cuda:0').view(1, -1, 1, 1)
-        std = torch.tensor(processor.image_std, device='cuda:0').view(1, -1, 1, 1)
+        mean = torch.tensor(processor.image_mean, device=device).view(1, -1, 1, 1)
+        std = torch.tensor(processor.image_std, device=device).view(1, -1, 1, 1)
         corr_imgs = {"pixel_values": ((corr_imgs["pixel_values"] - mean) / std)}
         corr_imgs["pixel_values"] = corr_imgs["pixel_values"].unsqueeze(1)
         images["pixel_values"] = images["pixel_values"].unsqueeze(1)

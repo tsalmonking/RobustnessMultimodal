@@ -111,10 +111,13 @@ def img_corruption(model, tokenizer, processor, args, news, label):
 model_sbert = SentenceTransformer("all-MiniLM-L6-v2")
 def txt_corruption(news):
     # LLM-based text corruption
+    client = ollama.Client(host="http://127.0.0.1:11435")
     user_content = f"News article:\n{news['txt']}"
-    response = ollama.chat(
-        model="phi3:instruct",
-        options={"temperature": 0.3},
+    response = client.chat(
+        model="qwen2.5:14b-instruct",
+        options={"temperature": 0.25,
+                 "top_p": 0.9,
+                 "num_ctx": 8192},
         messages=[
             {"role": "system", "content": LLM_CORRUPTER_PROMPT},
             {"role": "user", "content": user_content},
@@ -201,7 +204,7 @@ def load_model(device, args):
     if os.path.exists(model_path):
         try:
             # when a serious GPU will be available change map_location to device
-            model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            model.load_state_dict(torch.load(model_path, map_location=device))
         except Exception:
             error("Error loading weights, it will be used random weights. The results will be meaningless.")
     else:
