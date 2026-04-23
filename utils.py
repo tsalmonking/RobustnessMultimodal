@@ -15,6 +15,8 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     confusion_matrix,
+    roc_curve,
+    auc,
 )
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 from sentence_transformers import SentenceTransformer, util
@@ -50,7 +52,7 @@ class WrappedModel(torch.nn.Module):
 
         return torch.cat((logit_class_0, logit_class_1), dim=1)
 
-def use_model(model, tokenizer, processor, args, news):
+def use_model(model, tokenizer, processor, args, news, thr, modality=None):
     # Text tokenization
     token_txt = tokenizer(
         news["txt"],
@@ -71,10 +73,15 @@ def use_model(model, tokenizer, processor, args, news):
 
     # Using the model
     with torch.no_grad():
-        outputs = model(process_img, token_txt)
-        preds = [1 if i > 0.5 else 0 for i in outputs.cpu().detach().numpy()]
+        if modality == "text":
+            output = model(images=None, texts=token_txt)
+        elif modality == "image":
+            output = model(images=process_img, texts=None)
+        else:
+            output = model(process_img, token_txt)
+        preds = [1 if i > thr else 0 for i in output.cpu().detach().numpy()]
 
-    return preds
+    return preds, output
 
 def save_img(img, save_path):
     to_pil = T.ToPILImage()
@@ -115,13 +122,11 @@ def txt_corruption(news):
     user_content = f"News article:\n{news['txt']}"
     response = client.chat(
         model="qwen2.5:14b-instruct",
-        options={"temperature": 0.25,
-                 "top_p": 0.9,
-                 "num_ctx": 8192},
+        options={"temperature": 0.5, "max_tokens": 2048},
         messages=[
             {"role": "system", "content": LLM_CORRUPTER_PROMPT},
             {"role": "user", "content": user_content},
-        ],
+        ]
     )
     corr_txt = response["message"]["content"].strip()
     corr_news = {"txt": corr_txt, "img": news["img"]}
@@ -135,6 +140,7 @@ def txt_corruption(news):
 def save_results(
     output_dir,
     idx,
+    img_path,
     news,
     clean_img,
     img_corr_news_pgd,
@@ -152,12 +158,18 @@ def save_results(
 
     # Save result data
     result_data = {
-        "index": int(idx),
-        "true_label": int(preds["label_true"]),
-        "pred_clean": int(preds["clean"]),
-        "pred_img_corr": int(preds["img_corr"]),
-        "pred_txt_corr": int(preds["txt_corr"]),
-        "pred_multimodal_corr": int(preds["multimodal_corr"]),
+        "news": int(idx),
+        "img": img_path,
+        "label": int(preds["label"]),
+        "output_clean": float(preds["output_clean"]),
+        "threshold": float(preds["thr_multimodal_cross_clean"]),
+        "pred_clean": int(preds["pred_clean"]),
+        "output_txt_corr": float(preds["output_txt_corr"]),
+        "pred_txt_corr": int(preds["pred_txt_corr"]),
+        "output_img_corr": float(preds["output_img_corr"]),
+        "pred_img_corr": int(preds["pred_img_corr"]),
+        "output_multimodal_corr": float(preds["output_multimodal_corr"]),
+        "pred_multimodal_corr": int(preds["pred_multimodal_corr"]),
         "SSIM": round(float(ssim_pgd.item() if hasattr(ssim_pgd, "item") else ssim_pgd), 3),
         "txt_similarity": round(float(txt_similarity.item() if hasattr(txt_similarity, "item") else txt_similarity), 3),
         "original_txt": news["txt"],
@@ -171,7 +183,7 @@ def save_results(
 # Model loading
 # -----------------------
 
-def load_model(device, args):
+def load_model(device, args, modality=None):
     name_llm = args.name_llm
     name_img_embed = args.name_img_embed
     merge_tokens = args.merge_tokens
@@ -201,6 +213,11 @@ def load_model(device, args):
         merge_tokens=merge_tokens,
     )
 
+    if modality == "text":
+        model_path = model_path.replace(".pt", "_txt_only.pt")
+    elif modality == "image":
+        model_path = model_path.replace(".pt", "_img_only.pt")
+
     if os.path.exists(model_path):
         try:
             # when a serious GPU will be available change map_location to device
@@ -219,19 +236,24 @@ def load_model(device, args):
 # Metrics & reporting
 # -----------------------
 
-def compute_metrics(y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred)
-    rec = recall_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred)
-    macro_f1 = f1_score(y_true, y_pred, average="macro")
+def compute_metrics(y_true, y_pred, scores):
+    acc = accuracy_score(y_true, y_pred, zero_division=0)
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
     conf_matr = confusion_matrix(y_true, y_pred)
+    
+    # AUC on on samples
+    fpr, tpr, thr = roc_curve(y_true, scores)
+    auc_score = auc(fpr, tpr)
     return {
         "accuracy": round(acc, 3),
         "precision": round(prec, 3),
         "recall": round(rec, 3),
         "f1": round(f1, 3),
         "macro_f1": round(macro_f1, 3),
+        "auc": round(auc_score, 3),
     }, conf_matr
 
 
@@ -270,7 +292,7 @@ def compute_robustness_metrics(y_true, y_clean, y_corr):
 
 
 def plot_confusion_matrix(cm, labels, out_file):
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=(6, 6))
     sns.heatmap(
         cm, annot=True, fmt="d", xticklabels=labels, yticklabels=labels, cmap="Blues"
     )
@@ -279,3 +301,122 @@ def plot_confusion_matrix(cm, labels, out_file):
     plt.tight_layout()
     plt.savefig(out_file)
     plt.close()
+
+def plot_text_vs_image( y_true, logits_text, logits_image, out_file):
+    logits_text = np.asarray(logits_text).reshape(-1)
+    logits_image = np.asarray(logits_image).reshape(-1)
+    y_true = np.asarray(y_true).reshape(-1)
+
+    mask_fake = y_true == 0
+    mask_real = y_true == 1
+
+    plt.figure(figsize=(10, 10))
+
+    # Fake = cerchio vuoto rosso
+    plt.scatter(
+        logits_text[mask_fake],
+        logits_image[mask_fake],
+        c='red',
+        label='Fake (label=0)',
+        alpha=0.8
+    )
+
+    # Real = cerchio pieno blu
+    plt.scatter(
+        logits_text[mask_real],
+        logits_image[mask_real],
+        c='blue',
+        label='Real (label=1)',
+        alpha=0.8
+    )
+
+    plt.axvline(0, linestyle='--')
+    plt.axhline(0, linestyle='--')
+
+    plt.xlabel("Logit testo")
+    plt.ylabel("Logit immagine")
+    plt.title("Scatter logit: testo vs immagine")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_file)
+    plt.close()
+
+def plot_shift_arrows(
+    y_true,
+    logit_text_clean,
+    logit_image_clean,
+    logit_text_corr,
+    logit_image_corr,
+    out_file
+):
+    x0 = np.asarray(logit_text_clean)
+    y0 = np.asarray(logit_image_clean)
+    x1 = np.asarray(logit_text_corr)
+    y1 = np.asarray(logit_image_corr)
+    y_true = np.asarray(y_true)
+
+    dx = x1 - x0
+    dy = y1 - y0
+
+    plt.figure(figsize=(10, 10))
+
+    mask_fake = y_true == 0
+    mask_real = y_true == 1
+
+    # punti iniziali
+    plt.scatter(
+        x0[mask_fake], y0[mask_fake],
+        c ="red", label="Fake clean", alpha=0.8
+    )
+    plt.scatter(
+        x0[mask_real], y0[mask_real],
+        c="blue", label="Real clean", alpha=0.8
+    )
+
+    # frecce
+    plt.quiver(
+        x0[mask_fake], y0[mask_fake],
+        dx[mask_fake], dy[mask_fake],
+        angles='xy', scale_units='xy', scale=1,
+        color='red', alpha=0.5
+    )
+    plt.quiver(
+        x0[mask_real], y0[mask_real],
+        dx[mask_real], dy[mask_real],
+        angles='xy', scale_units='xy', scale=1,
+        color='blue', alpha=0.5
+    )
+
+    plt.axvline(0, linestyle='--')
+    plt.axhline(0, linestyle='--')
+
+    plt.xlabel("Logit testo")
+    plt.ylabel("Logit immagine")
+    plt.title("Spostamento dei sample dopo corruzione")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_file)
+    plt.close()
+
+def compute_threshold(logits, labels):
+    fpr, tpr, thr = roc_curve(labels, logits)
+    auc_score = auc(fpr, tpr)
+    best_thr = thr[(tpr - fpr).argmax()]
+    return best_thr, round(auc_score, 3)
+
+def preds_fusion(first_modality_outputs, second_modality_outputs, labels, mode="mean"):
+    if mode == "mean":
+        fused_scores = (first_modality_outputs + second_modality_outputs) / 2
+    elif mode == "max":
+        fused_scores = torch.max(first_modality_outputs, second_modality_outputs)
+    elif mode == "min":
+        fused_scores = torch.min(first_modality_outputs, second_modality_outputs)
+    else:
+        raise ValueError(f"Invalid fusion mode: {mode}")
+
+    th, auc_score = compute_threshold(fused_scores.detach().cpu().numpy(), labels.detach().cpu().numpy())
+    fused_preds = [1 if s > th else 0 for s in fused_scores]
+
+    return fused_preds, fused_scores.detach().cpu().numpy().reshape(-1)

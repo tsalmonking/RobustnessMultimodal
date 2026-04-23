@@ -69,40 +69,47 @@ class Themis(nn.Module):
             self.patch_merger = PatchMerger(self.hinner_dim, n_patches)
         self.layernorm = nn.LayerNorm(self.hinner_dim)
 
-    def forward(self, images, texts):
-        # reshape the images
+    def forward(self, images=None, texts=None):
+        #reshape the images
+        
+        if images is not None:
+            b,k, c, h, w = images["pixel_values"].shape
+            images["pixel_values"] = images["pixel_values"].reshape(b*k, c, h, w)
+            #get the image and text embeddings
+            image_features = self.img_embed_model(**images)
+            image_features = image_features.last_hidden_state
+            image_features = self.image_proj(image_features)
+            #print(image_features.shape)
+        
+        if texts is not None:
+            text_embeds = self.emb(texts["input_ids"])
+            text_embeds = text_embeds.view(text_embeds.shape[0], text_embeds.shape[-2],  text_embeds.shape[-1])
+        
+        #print(text_embeds.shape)
+        #add the cls token to the text embeddings
+        #cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+        
+        #stack the image features and text features
+        if images is not None and texts is not None:
+            x = torch.cat((image_features, text_embeds), dim=1)
+            if self.merge_tokens is not None:
+                x = self.patch_merger(x)
+        elif images is not None:
+            x = image_features
+        elif texts is not None:
+            x = text_embeds
+        else:    
+            raise ValueError("At least one of images or texts must be not None")
 
-        b, k, c, h, w = images["pixel_values"].shape
-        images["pixel_values"] = images["pixel_values"].reshape(b * k, c, h, w)
-        # get the image and text embeddings
-        image_features = self.img_embed_model(**images)
-        image_features = image_features.last_hidden_state
-        image_features = self.image_proj(image_features)
-        # print(image_features.shape)
-
-        text_embeds = self.emb(texts["input_ids"])
-        text_embeds = text_embeds.view(
-            text_embeds.shape[0], text_embeds.shape[-2], text_embeds.shape[-1]
-        )
-
-        # print(text_embeds.shape)
-        # add the cls token to the text embeddings
-        # cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-
-        # stack the image features and text features
-        x = torch.cat((image_features, text_embeds), dim=1)
-
-        if self.merge_tokens is not None:
-            x = self.patch_merger(x)
-        # pass through the module list h
+        #pass through the module list h
         for i in range(len(self.h)):
             x = self.h[i](x)[0]
         x = x.mean(dim=1)
-
-        # print(x.shape)
-        # pass through the lm head
+        
+        #print(x.shape)
+        #pass through the lm head
         x = self.lm_head(x)
-
+        
         return x
 
 
