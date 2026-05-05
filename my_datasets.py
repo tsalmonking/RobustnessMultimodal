@@ -54,7 +54,7 @@ class Fakeddit_Dataset(Dataset):
             if self.preprocessor:
                 image = self.preprocessor(images=image, return_tensors="pt")
             
-            return image, label, text
+            return image, label, text, img_path, idx
 
 class Recovery_Dataset(Dataset):
         def __init__(self, annotations, img_dir, n_tokens, preprocessor=None, tokenizer=None):

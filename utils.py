@@ -7,7 +7,10 @@ import torchattacks
 import torchvision.transforms as T
 import ollama
 import json
+import glob
+import gc
 
+from torch.utils.data import DataLoader
 from PIL import Image
 from sklearn.metrics import (
     accuracy_score,
@@ -20,10 +23,14 @@ from sklearn.metrics import (
 )
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 from sentence_transformers import SentenceTransformer, util
+from tqdm import tqdm
 
 
 # Custom modules
+import my_datasets
+
 from themis_model import get_Themis
+from bertattack import attack, Feature
 from prompt import LLM_CORRUPTER_PROMPT
 
 # Utilities for logging
@@ -34,6 +41,14 @@ def warning(msg):
 def error(msg):
     print(f"\033[31m{msg}\033[0m")
 
+def cleanup_cuda(*objs):
+    for obj in objs:
+        del obj
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
 # The wrapped model for PGD attack, to get only one modality perturbed
 class WrappedModel(torch.nn.Module):
     def __init__(self, model, fixed_txt, processor):
@@ -41,18 +56,138 @@ class WrappedModel(torch.nn.Module):
         self.model = model
         self.fixed_txt = fixed_txt
         self.processor = processor
-    def forward(self, x):
-        fixed_txt_repeated = {}
-        for key, tensor in self.fixed_txt.items():
-            fixed_txt_repeated[key] = tensor.repeat(x.size(0), 1)
-        mean = torch.tensor(self.processor.image_mean, device=x.device).view(1, -1, 1, 1)
-        std = torch.tensor(self.processor.image_std, device=x.device).view(1, -1, 1, 1)
-        logit_class_1 = self.model({"pixel_values": ((x - mean) / std).unsqueeze(1)}, fixed_txt_repeated)
-        logit_class_0 = torch.zeros_like(logit_class_1)
 
-        return torch.cat((logit_class_0, logit_class_1), dim=1)
+    def forward(self, x):
+        mean = torch.tensor(
+            self.processor.image_mean, device=x.device, dtype=x.dtype
+        ).view(1, -1, 1, 1)
+        std = torch.tensor(
+            self.processor.image_std, device=x.device, dtype=x.dtype
+        ).view(1, -1, 1, 1)
+        x = (x - mean) / std
+        if self.fixed_txt is not None:
+            fixed_txt_repeated = {}
+            for key, tensor in self.fixed_txt.items():
+                tensor = tensor.to(x.device)
+
+                if tensor.size(0) == 1 and x.size(0) > 1:
+                    fixed_txt_repeated[key] = tensor.repeat(x.size(0), 1)
+                elif tensor.size(0) == x.size(0):
+                    fixed_txt_repeated[key] = tensor
+                else:
+                    raise ValueError(
+                        f"Batch mismatch for {key}: text batch={tensor.size(0)}, image batch={x.size(0)}"
+                    )
+            out = self.model({"pixel_values": x}, fixed_txt_repeated)
+        else:
+            out = self.model({"pixel_values": x}, None)
+        if out.ndim == 1:
+            out = out.unsqueeze(1)
+        logits = torch.cat((1 - out, out), dim=1)
+        return logits
+
+class BertAttackThemisWrapper(torch.nn.Module):
+    def __init__(self, themis_model, themis_tokenizer, processor, fixed_image, args, device, bert_tokenizer):
+        super().__init__()
+        self.themis_model = themis_model
+        self.themis_tokenizer = themis_tokenizer
+        self.processor = processor
+        self.args = args
+        self.device = device
+        self.bert_tokenizer = bert_tokenizer
+
+        # immagine fissata
+        if isinstance(fixed_image, Image.Image):
+            processed = processor(images=fixed_image, return_tensors="pt")
+            pixel_values = processed["pixel_values"].to(device)
+            if pixel_values.dim() == 4:
+                pixel_values = pixel_values.unsqueeze(1)
+            self.fixed_images = {"pixel_values": pixel_values}
+        else:
+            pixel_values = fixed_image.to(device)
+            if pixel_values.dim() == 4:
+                pixel_values = pixel_values.unsqueeze(1)
+            self.fixed_images = {"pixel_values": pixel_values}
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None):
+        # batch di testi BERT -> stringhe
+        texts = self.bert_tokenizer.batch_decode(
+            input_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
+        )
+
+        # ritokenizzazione con tokenizer di Themis
+        themis_tokens = self.themis_tokenizer(
+            texts,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            return_attention_mask=False,
+            max_length=self.args.n_tokens,
+        )
+
+        themis_tokens = {k: v.to(self.device) for k, v in themis_tokens.items()}
+
+        # repeat immagine se batch > 1
+        pixel_values = self.fixed_images["pixel_values"]
+        if pixel_values.size(0) == 1 and len(texts) > 1:
+            pixel_values = pixel_values.repeat(len(texts), 1, 1, 1, 1)
+        elif pixel_values.size(0) != len(texts):
+            raise ValueError(
+                f"Image batch mismatch: image batch={pixel_values.size(0)}, text batch={len(texts)}"
+            )
+
+        images = {"pixel_values": pixel_values}
+
+        outputs = self.themis_model(images, themis_tokens)  # [B,1] o [B]
+
+        del themis_tokens, images
+        
+        if outputs.ndim == 1:
+            outputs = outputs.unsqueeze(1)
+
+        # output sigmoidato in [0,1] -> logits fake 2-class
+        # classe 0 = 1 - p, classe 1 = p
+        logits = torch.cat((1 - outputs, outputs), dim=1)
+
+        # compatibilità con HuggingFace style: model(...)[0]
+        return (logits,)
+
+class BertAttackTextOnlyWrapper(torch.nn.Module):
+    def __init__(self, text_model, themis_tokenizer, args, device, bert_tokenizer):
+        super().__init__()
+        self.text_model = text_model
+        self.themis_tokenizer = themis_tokenizer
+        self.args = args
+        self.device = device
+        self.bert_tokenizer = bert_tokenizer
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None):
+        texts = self.bert_tokenizer.batch_decode(
+            input_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )
+
+        themis_tokens = self.themis_tokenizer(
+            texts,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            return_attention_mask=False,
+            max_length=self.args.n_tokens,
+        )
+        themis_tokens = {k: v.to(self.device) for k, v in themis_tokens.items()}
+
+        with torch.inference_mode():
+            outputs = self.text_model(images=None, texts=themis_tokens)
+            del themis_tokens
+            if outputs.ndim == 1:
+                outputs = outputs.unsqueeze(1)
+            logits = torch.cat((1 - outputs, outputs), dim=1)
+        return (logits,)
 
 def use_model(model, tokenizer, processor, args, news, thr, modality=None):
+    device = next(model.parameters()).device
     # Text tokenization
     token_txt = tokenizer(
         news["txt"],
@@ -61,10 +196,10 @@ def use_model(model, tokenizer, processor, args, news, thr, modality=None):
         truncation=True,
         return_attention_mask=False,
         max_length=args.n_tokens,
-    )
+    ).to(device)
     # Image processing
     if isinstance(news["img"], Image.Image):
-        process_img = processor(images=news["img"], return_tensors="pt")
+        process_img = processor(images=news["img"], return_tensors="pt").to(device)
         process_img["pixel_values"] = process_img["pixel_values"].unsqueeze(1)
     else:
         process_img = {"pixel_values": news["img"]}
@@ -88,6 +223,7 @@ def save_img(img, save_path):
     to_pil(img.squeeze(0).cpu().float()).save(save_path)
 
 def img_corruption(model, tokenizer, processor, args, news, label):
+    device = label.device
     # Text tokenization for fixed text
     token_txt = tokenizer(
         news["txt"],
@@ -99,6 +235,7 @@ def img_corruption(model, tokenizer, processor, args, news, label):
     )
     # Image processing for clean image
     process_img = processor(images=news["img"], return_tensors="pt", do_normalize=False)
+    process_img = {k: v.to(device) for k, v in process_img.items()}
 
     # PGD Attack
     wrapped_model = WrappedModel(model, token_txt, processor)
@@ -110,12 +247,187 @@ def img_corruption(model, tokenizer, processor, args, news, label):
     corr_news = {"txt": news["txt"], "img": corr_img}
 
     # Compute SSIM
-    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     ssim_val = ssim(preds=corr_img.float(), target=process_img["pixel_values"].float())
 
     return corr_news, ssim_val, process_img["pixel_values"]
 
-model_sbert = SentenceTransformer("all-MiniLM-L6-v2")
+
+model_sbert = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+def bertattack(
+    model,
+    themis_tokenizer,
+    processor,
+    args,
+    news,
+    label,
+    device,
+    bert_tokenizer,
+    mlm_model,
+    mlm_device,
+    use_bpe=0,
+):
+    feat = Feature(news["txt"], int(label))
+
+    tgt_model = BertAttackThemisWrapper(
+        themis_model=model,
+        themis_tokenizer=themis_tokenizer,
+        processor=processor,
+        fixed_image=news["img"],
+        args=args,
+        device=device,
+        bert_tokenizer=bert_tokenizer,
+    )
+
+    attacked_feat = attack(
+        feature=feat,
+        tgt_model=tgt_model,
+        mlm_model=mlm_model,
+        tokenizer=bert_tokenizer,
+        k=args.k,
+        batch_size=args.batch_size,
+        max_length=min(args.n_tokens, 512),
+        cos_mat=None,
+        w2i={},
+        i2w={},
+        use_bpe=use_bpe,
+        threshold_pred_score=args.threshold_pred_score,
+        target_device=device,
+        mlm_device=mlm_device,
+        max_words_to_attack=args.max_words_to_attack,
+        max_candidates_per_word=args.max_candidates_per_word,
+    )
+
+    corr_txt = attacked_feat.final_adverse
+    corr_news = {"txt": corr_txt, "img": news["img"]}
+
+    with torch.no_grad():
+        emb_original = model_sbert.encode(news["txt"], convert_to_tensor=True, device="cpu")
+        emb_corr = model_sbert.encode(corr_txt, convert_to_tensor=True, device="cpu")
+        txt_similarity = util.cos_sim(emb_original, emb_corr).item()
+
+    cleanup_cuda(tgt_model, attacked_feat, feat, emb_original, emb_corr)
+    
+    return corr_news, txt_similarity
+
+def bertattack_text_only(
+    model,
+    themis_tokenizer,
+    args,
+    dataset,
+    indices,
+    labels,
+    device,
+    bert_tokenizer,
+    mlm_model,
+    mlm_device,
+    min_similarity=0.5,
+):
+    corr_txts = []
+    similarities = []
+
+    indices = indices.tolist() if torch.is_tensor(indices) else list(indices)
+    labels = labels.detach().cpu().tolist() if torch.is_tensor(labels) else list(labels)
+
+    for idx, label in zip(indices, labels):
+        original_txt = dataset.texts[idx]
+
+        corr_txt, txt_similarity = bertattack_text_only_single(
+            model=model,
+            themis_tokenizer=themis_tokenizer,
+            args=args,
+            txt=original_txt,
+            label=label,
+            device=device,
+            bert_tokenizer=bert_tokenizer,
+            mlm_model=mlm_model,
+            mlm_device=mlm_device,
+        )
+
+        if txt_similarity < min_similarity:
+            corr_txt = original_txt
+            txt_similarity = 1.0
+
+        corr_txts.append(corr_txt)
+        similarities.append(txt_similarity)
+
+        cleanup_cuda()
+
+    tokenized_corr_txts = themis_tokenizer(
+        corr_txts,
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        return_attention_mask=False,
+        max_length=args.n_tokens,
+    )
+
+    # IMPORTANTISSIMO: resta su CPU
+    tokenized_corr_txts = {
+        "input_ids": tokenized_corr_txts.input_ids.unsqueeze(1)
+    }
+
+    return tokenized_corr_txts, similarities
+
+def bertattack_text_only_single(
+    model,
+    themis_tokenizer,
+    args,
+    txt,
+    label,
+    device,
+    bert_tokenizer,
+    mlm_model,
+    mlm_device,
+    use_bpe=0,
+):
+    feat = Feature(txt, int(label))
+
+    tgt_model = BertAttackTextOnlyWrapper(
+        text_model=model,
+        themis_tokenizer=themis_tokenizer,
+        args=args,
+        device=device,
+        bert_tokenizer=bert_tokenizer,
+    )
+
+    try:
+        attacked_feat = attack(
+            feature=feat,
+            tgt_model=tgt_model,
+            mlm_model=mlm_model,
+            tokenizer=bert_tokenizer,
+            k=args.k,
+            batch_size=args.batch_size,
+            max_length=min(args.n_tokens, 512),
+            cos_mat=None,
+            w2i={},
+            i2w={},
+            use_bpe=use_bpe,
+            threshold_pred_score=args.threshold_pred_score,
+            target_device=device,
+            mlm_device=mlm_device,
+            max_words_to_attack=args.max_words_to_attack,
+            max_candidates_per_word=args.max_candidates_per_word,
+            max_words_for_importance=args.max_words_for_importance
+        )
+
+        corr_txt = str(attacked_feat.final_adverse)
+
+        with torch.no_grad():
+            emb_original = model_sbert.encode(txt, convert_to_tensor=True, device="cpu")
+            emb_corr = model_sbert.encode(corr_txt, convert_to_tensor=True, device="cpu")
+            txt_similarity = util.cos_sim(emb_original, emb_corr).item()
+
+        cleanup_cuda(emb_original, emb_corr)
+
+        return corr_txt, txt_similarity
+
+    finally:
+        cleanup_cuda(tgt_model, feat)
+        if "attacked_feat" in locals():
+            cleanup_cuda(attacked_feat)
+
 def txt_corruption(news):
     # LLM-based text corruption
     client = ollama.Client(host="http://127.0.0.1:11435")
@@ -162,7 +474,7 @@ def save_results(
         "img": img_path,
         "label": int(preds["label"]),
         "output_clean": float(preds["output_clean"]),
-        "threshold": float(preds["thr_multimodal_cross_clean"]),
+        "threshold": float(preds["thr_multimodal_cross"]),
         "pred_clean": int(preds["pred_clean"]),
         "output_txt_corr": float(preds["output_txt_corr"]),
         "pred_txt_corr": int(preds["pred_txt_corr"]),
@@ -184,8 +496,14 @@ def save_results(
 # -----------------------
 
 def load_model(device, args, modality=None):
+    if modality is None:
+        name_img_embed = "openai/clip-vit-base-patch32"
+        model_path = "model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt"
+    else:
+        name_img_embed = args.name_img_embed
+        model_path = args.model_path
+
     name_llm = args.name_llm
-    name_img_embed = args.name_img_embed
     merge_tokens = args.merge_tokens
     if merge_tokens == 0:
         merge_tokens = None
@@ -193,7 +511,6 @@ def load_model(device, args, modality=None):
     lora_r = args.lora_r
     lora_dropout = args.lora_dropout
     use_lora = args.use_lora
-    model_path = args.model_path
     set_params = args.set_params
     if set_params:
         p = model_path.split("\\")[-1].split("_")
@@ -211,6 +528,7 @@ def load_model(device, args, modality=None):
         lora_r=lora_r,
         lora_dropout=lora_dropout,
         merge_tokens=merge_tokens,
+        device=device
     )
 
     if modality == "text":
@@ -237,11 +555,11 @@ def load_model(device, args, modality=None):
 # -----------------------
 
 def compute_metrics(y_true, y_pred, scores):
-    acc = accuracy_score(y_true, y_pred, zero_division=0)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred)
+    rec = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    macro_f1 = f1_score(y_true, y_pred, average="macro")
     conf_matr = confusion_matrix(y_true, y_pred)
     
     # AUC on on samples
@@ -253,8 +571,8 @@ def compute_metrics(y_true, y_pred, scores):
         "recall": round(rec, 3),
         "f1": round(f1, 3),
         "macro_f1": round(macro_f1, 3),
-        "auc": round(auc_score, 3),
-    }, conf_matr
+        "auc": auc_score,
+    }, fpr, tpr, conf_matr
 
 
 def compute_robustness_metrics(y_true, y_clean, y_corr):
@@ -350,49 +668,51 @@ def plot_shift_arrows(
     logit_image_corr,
     out_file
 ):
-    x0 = np.asarray(logit_text_clean)
-    y0 = np.asarray(logit_image_clean)
-    x1 = np.asarray(logit_text_corr)
-    y1 = np.asarray(logit_image_corr)
-    y_true = np.asarray(y_true)
+    x0 = np.asarray(logit_text_clean).reshape(-1)
+    y0 = np.asarray(logit_image_clean).reshape(-1)
+    x1 = np.asarray(logit_text_corr).reshape(-1)
+    y1 = np.asarray(logit_image_corr).reshape(-1)
+    y_true = np.asarray(y_true).reshape(-1)
+
+    assert len(x0) == len(y0) == len(x1) == len(y1) == len(y_true), \
+        f"Length mismatch: x0={len(x0)}, y0={len(y0)}, x1={len(x1)}, y1={len(y1)}, y_true={len(y_true)}"
 
     dx = x1 - x0
     dy = y1 - y0
+
+    # print("DEBUG shifts:")
+    # print("dx mean abs:", np.mean(np.abs(dx)))
+    # print("dy mean abs:", np.mean(np.abs(dy)))
+    # print("dx zero-ish:", np.mean(np.abs(dx) < 1e-6))
+    # print("dy zero-ish:", np.mean(np.abs(dy) < 1e-6))
 
     plt.figure(figsize=(10, 10))
 
     mask_fake = y_true == 0
     mask_real = y_true == 1
 
-    # punti iniziali
-    plt.scatter(
-        x0[mask_fake], y0[mask_fake],
-        c ="red", label="Fake clean", alpha=0.8
-    )
-    plt.scatter(
-        x0[mask_real], y0[mask_real],
-        c="blue", label="Real clean", alpha=0.8
-    )
+    plt.scatter(x0[mask_fake], y0[mask_fake], c="red", label="Fake clean", alpha=0.8)
+    plt.scatter(x0[mask_real], y0[mask_real], c="blue", label="Real clean", alpha=0.8)
 
-    # frecce
     plt.quiver(
         x0[mask_fake], y0[mask_fake],
         dx[mask_fake], dy[mask_fake],
-        angles='xy', scale_units='xy', scale=1,
-        color='red', alpha=0.5
+        angles="xy", scale_units="xy", scale=1,
+        color="red", alpha=0.5
     )
+
     plt.quiver(
         x0[mask_real], y0[mask_real],
         dx[mask_real], dy[mask_real],
-        angles='xy', scale_units='xy', scale=1,
-        color='blue', alpha=0.5
+        angles="xy", scale_units="xy", scale=1,
+        color="blue", alpha=0.5
     )
 
-    plt.axvline(0, linestyle='--')
-    plt.axhline(0, linestyle='--')
+    plt.axvline(0.5, linestyle="--")
+    plt.axhline(0.5, linestyle="--")
 
-    plt.xlabel("Logit testo")
-    plt.ylabel("Logit immagine")
+    plt.xlabel("Score testo")
+    plt.ylabel("Score immagine")
     plt.title("Spostamento dei sample dopo corruzione")
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -400,13 +720,86 @@ def plot_shift_arrows(
     plt.savefig(out_file)
     plt.close()
 
-def compute_threshold(logits, labels):
-    fpr, tpr, thr = roc_curve(labels, logits)
-    auc_score = auc(fpr, tpr)
-    best_thr = thr[(tpr - fpr).argmax()]
-    return best_thr, round(auc_score, 3)
+def plot_roc(rocs_info, out_file):
+    plt.figure(figsize=(10, 10))
 
-def preds_fusion(first_modality_outputs, second_modality_outputs, labels, mode="mean"):
+    for name, roc_data in rocs_info.items():
+        fpr = roc_data["fpr"]
+        tpr = roc_data["tpr"]
+        roc_auc = roc_data["roc_auc"]
+
+        plt.plot(
+            fpr,
+            tpr,
+            linewidth=2,
+            label=f"{name} (AUC = {roc_auc:.3f})"
+        )
+
+    plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1, label="Random")
+
+    plt.xlim(0, 1)
+    plt.ylim(0, 1.02)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(out_file)
+    plt.close()
+
+def compute_threshold(model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, modality, model2=None, mode=None, th=None):
+    # Select dataset class and load function dynamically
+    dataset_class = dataset_classes[args.dataset]
+    load_func = load_functions[args.dataset]
+
+    dataset_val = my_datasets.get_dataset(
+        dataset_class,
+        load_func,
+        args.n_tokens,
+        processor,
+        tokenizer,
+        glob.glob(f"data/{args.dataset}/val_augmented.*")[0],
+        f"data/{args.dataset}/images",
+    )
+    
+    dataloader_val = DataLoader(
+        dataset_val,
+        batch_size=args.batch_size,
+        shuffle=False,
+    )
+
+    y, y_preds = [], []
+    with torch.no_grad():
+        for images, labels, texts, _, _ in tqdm(dataloader_val, desc="Threshold computation", total=len(dataloader_val), leave=False):
+            images = images.to(device_mm)
+            texts = texts.to(device_mm)
+            images_for_img = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in images.items()}
+            texts_for_txt = {k: v.to(device_txt) if torch.is_tensor(v) else v for k, v in texts.items()}
+            if modality == "multimodal":
+                outputs = model(images, texts)
+                y_preds.extend(outputs.to("cpu").detach().numpy())
+            elif modality == "unimodal_txt":
+                outputs = model(None, texts_for_txt)
+                y_preds.extend(outputs.to("cpu").detach().numpy())
+            elif modality == "unimodal_img":
+                outputs = model(images_for_img, None)
+                y_preds.extend(outputs.to("cpu").detach().numpy())
+            else:
+                outputs1 = model(None, texts_for_txt)
+                outputs2 = model2(images_for_img, None)
+                fused_outputs = preds_fusion(outputs1, outputs2, mode)
+                y_preds.extend(fused_outputs)
+            y.extend(labels.to("cpu").numpy())
+
+    fpr, tpr, thr = roc_curve(y, y_preds)
+    best_thr = thr[(tpr - fpr).argmax()]
+    return best_thr
+
+def preds_fusion(first_modality_outputs, second_modality_outputs, mode="mean", th=None):
+    first_modality_outputs = first_modality_outputs.detach().cpu()
+    second_modality_outputs = second_modality_outputs.detach().cpu()
     if mode == "mean":
         fused_scores = (first_modality_outputs + second_modality_outputs) / 2
     elif mode == "max":
@@ -416,7 +809,8 @@ def preds_fusion(first_modality_outputs, second_modality_outputs, labels, mode="
     else:
         raise ValueError(f"Invalid fusion mode: {mode}")
 
-    th, auc_score = compute_threshold(fused_scores.detach().cpu().numpy(), labels.detach().cpu().numpy())
-    fused_preds = [1 if s > th else 0 for s in fused_scores]
-
-    return fused_preds, fused_scores.detach().cpu().numpy().reshape(-1)
+    if th is not None:
+        fused_preds = [1 if s > th else 0 for s in fused_scores]
+        return fused_preds, fused_scores.detach().cpu().numpy().reshape(-1)
+    else:
+        return fused_scores.detach().cpu().numpy().reshape(-1)

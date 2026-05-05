@@ -9,7 +9,7 @@ from transformers import InstructBlipVisionModel, CLIPVisionModel, AutoModel
 
 import torch.nn as nn
 
-torch.set_default_device("cuda")
+#torch.set_default_device("cuda")
 
 
 def print_trainable_parameters(model):
@@ -73,6 +73,10 @@ class Themis(nn.Module):
         #reshape the images
         
         if images is not None:
+            if isinstance(images, torch.Tensor):
+                images = {"pixel_values": images}
+            if len(images["pixel_values"].shape) == 4:
+                images["pixel_values"] = images["pixel_values"].unsqueeze(1)
             b,k, c, h, w = images["pixel_values"].shape
             images["pixel_values"] = images["pixel_values"].reshape(b*k, c, h, w)
             #get the image and text embeddings
@@ -122,10 +126,11 @@ def get_Themis(
     lora_r=16,
     lora_dropout=0.2,
     merge_tokens=None,
+    device="cuda:0"
 ):
     # model = AutoModelForCausalLM.from_pretrained("microsoft/phi-2", torch_dtype="auto", trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        name_llm, device_map="cuda", trust_remote_code=True
+        name_llm, device_map={"": str(device)}, trust_remote_code=True
     )
     tokenizer = AutoTokenizer.from_pretrained(name_llm, trust_remote_code=True)
 
@@ -139,18 +144,18 @@ def get_Themis(
     # exit()
     if "clip" in name_img_embed:
         img_embed = CLIPVisionModel.from_pretrained(
-            name_img_embed, device_map="cuda", trust_remote_code=True
+            name_img_embed, device_map={"": str(device)}, trust_remote_code=True
         )
     elif "instruct" in name_img_embed:
         img_embed = InstructBlipVisionModel.from_pretrained(
-            name_img_embed, device_map="cuda", trust_remote_code=True
+            name_img_embed, device_map={"": str(device)}, trust_remote_code=True
         )
     else:
         img_embed = AutoModel.from_pretrained(
-            name_img_embed, device_map="cuda", trust_remote_code=True
+            name_img_embed, device_map={"": str(device)}, trust_remote_code=True
         )
     processor = AutoImageProcessor.from_pretrained(
-        name_img_embed, trust_remote_code=True, device_map="cuda"
+        name_img_embed, trust_remote_code=True, device_map={"": str(device)}
     )
 
     # add a model head for classification

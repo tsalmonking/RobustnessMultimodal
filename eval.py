@@ -3,11 +3,13 @@ import os
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
+import torchattacks
 import json
 import glob
 import argparse
 import torchvision.transforms as T
 import numpy as np
+from transformers import BertTokenizer, BertForMaskedLM
 
 from torch.utils.data import DataLoader
 from PIL import Image
@@ -22,22 +24,33 @@ from utils import (
     plot_confusion_matrix,
     plot_text_vs_image,
     plot_shift_arrows,
+    plot_roc,
     compute_threshold,
     preds_fusion,
     use_model,
     save_results,
     img_corruption,
+    bertattack,
+    bertattack_text_only,
     txt_corruption,
+    WrappedModel,
+    cleanup_cuda
 )
-from config import NAME_LLM, NAME_IMG_EMBED, WEIGHTS_PATH
-import datasets
-
-# Default configuration parameters
-BATCH_SIZE = 2
-N_TOKENS = 1024
-PGD_ITERS = 25
-EPSILON = 3 / 255
-MAX_TXT_CORRUPTION_ATTEMPTS = 5
+from config import (
+    NAME_LLM, 
+    NAME_IMG_EMBED, 
+    WEIGHTS_PATH, 
+    BATCH_SIZE, 
+    N_TOKENS, 
+    PGD_ITERS, 
+    EPSILON, 
+    K_BERT_ATTACK, 
+    THRESHOLD_PRED_SCORE,
+    MAX_WORDS_TO_ATTACK,
+    MAX_CANDIDATES_PER_WORD,
+    MAX_WORDS_FOR_IMPORTANCE,
+)
+import my_datasets
 
 # Get available datasets from Data directory
 available_datasets = [d for d in os.listdir("data") if os.path.isdir(os.path.join("data", d))]
@@ -73,13 +86,35 @@ def main():
     parser.add_argument("--alpha_factor", type=float, default=2.0)
     parser.add_argument("--results_path", type=str, default="results")
     parser.add_argument("--dataset", type=str, default="Fakeddit", choices=list(dataset_classes.keys()))
+    parser.add_argument("--k", type=int, default=K_BERT_ATTACK)
+    parser.add_argument("--threshold_pred_score", type=bool, default=THRESHOLD_PRED_SCORE)
+    parser.add_argument("--max_words_to_attack", type=int, default=MAX_WORDS_TO_ATTACK)
+    parser.add_argument("--max_candidates_per_word", type=int, default=MAX_CANDIDATES_PER_WORD)
+    parser.add_argument("--max_words_for_importance", type=int, default=MAX_WORDS_FOR_IMPORTANCE)
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_mm = torch.device("cuda:0")
+    device_txt = torch.device("cuda:1")
+    device_img = torch.device("cuda:2")
+    device_mlm = torch.device("cuda:3")
 
-    model, tokenizer, processor = load_model(device, args)
-    txt_model, tokenizer_txt, processor_txt = load_model(device, args, modality="text")
-    img_model, tokenizer_img, processor_img = load_model(device, args, modality="image")
+    model, tokenizer, processor = load_model(device_mm, args)
+    txt_model, tokenizer_txt, processor_txt = load_model(device_txt, args, modality="text")
+    img_model, tokenizer_img, processor_img = load_model(device_img, args, modality="image")
+
+    # Threshold computations
+    thr_multimodal_cross = 0.5#compute_threshold(model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, "multimodal")
+    thr_unimodal_txt = 0.5#compute_threshold(txt_model, processor_txt, tokenizer_txt, dataset_classes, load_functions, args, device_mm, device_txt, device_img, "unimodal_txt")
+    thr_unimodal_img = 0.5#compute_threshold(img_model, processor_img, tokenizer_img, dataset_classes, load_functions, args, device_mm, device_txt, device_img, "unimodal_img")
+    
+    thr_multimodal_fusion_mean = 0.5#compute_threshold(txt_model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, None, img_model, "mean", thr_multimodal_cross)
+    thr_multimodal_fusion_min = 0.5#compute_threshold(txt_model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, None, img_model, "min", thr_multimodal_cross)
+    thr_multimodal_fusion_max = 0.5#compute_threshold(txt_model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, None, img_model, "max", thr_multimodal_cross)
+
+    # Load BERT model and tokenizer for text corruption
+    bertattack_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", do_lower_case=True)
+    bertattack_mlm = BertForMaskedLM.from_pretrained("bert-base-uncased").to(device_mlm)
+    bertattack_mlm.eval()
 
     # Select dataset class and load function dynamically
     dataset_class = dataset_classes[args.dataset]
@@ -147,42 +182,45 @@ def main():
     multimodal_fusion_max_corr_outputs = []
     count = 0
     for images, labels, text, _, indices in tqdm(dataloader_test, desc="Evaluating", total=len(dataloader_test)):
-        if count == 1:
-            break
-        count += 1
-        corr_txts_list = []
-        corr_imgs_pil_list = []
-        indices = indices.tolist()
+        # if count == 1:
+        #    break
+        # count += 1
+        images = {k: v.to(device_mm) if torch.is_tensor(v) else v for k, v in images.items()}
+        text = {k: v.to(device_mm) if torch.is_tensor(v) else v for k, v in text.items()}
+        labels = labels.to(device_mm)
+        images_for_img = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in images.items()}
+        text_for_txt = {k: v.to(device_txt) if torch.is_tensor(v) else v for k, v in text.items()}
 
-        images_copy = {k: v.clone() if torch.is_tensor(v) else v for k, v in images.items()}
+        multimodal_corr_txts_list = []
+        multimodal_corr_imgs_pil_list = []
+        unimodal_clean_imgs_pil_list = []
+        indices = indices.tolist()
+        
         # Clean predictions
         with torch.no_grad():
             outputs = model(images, text)
-            thr_multimodal_cross_clean, auc_multimodal_cross_clean = compute_threshold(outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            preds = [1 if i > thr_multimodal_cross_clean else 0 for i in outputs.cpu().detach().numpy()]
+            preds = [1 if i > thr_multimodal_cross else 0 for i in outputs.cpu().detach().numpy()]
             y_preds.extend(preds)
             multimodal_cross_outputs.extend(outputs.cpu().detach().numpy())
             y_true.extend(labels.cpu().numpy())
 
-            txt_outputs = txt_model(images=None, texts=text)
-            thr_unimodal_txt_clean, auc_unimodal_txt_clean = compute_threshold(txt_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            txt_preds = [1 if i > thr_unimodal_txt_clean else 0 for i in txt_outputs.cpu().detach().numpy()]
+            txt_outputs = txt_model(images=None, texts=text_for_txt)
+            txt_preds = [1 if i > thr_unimodal_txt else 0 for i in txt_outputs.cpu().detach().numpy()]
             y_unimodal_txt_preds.extend(txt_preds)
             unimodal_txt_outputs.extend(txt_outputs.cpu().detach().numpy())
 
-            img_outputs = img_model(images=images_copy, texts=None)
-            thr_unimodal_img_clean, auc_unimodal_img_clean = compute_threshold(img_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            img_preds = [1 if i > thr_unimodal_img_clean else 0 for i in img_outputs.cpu().detach().numpy()]
+            img_outputs = img_model(images=images_for_img, texts=None)
+            img_preds = [1 if i > thr_unimodal_img else 0 for i in img_outputs.cpu().detach().numpy()]
             y_unimodal_img_preds.extend(img_preds)
             unimodal_img_outputs.extend(img_outputs.cpu().detach().numpy())
 
-            y_multimodal_fusion_mean_preds.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="mean")[0])
-            y_multimodal_fusion_min_preds.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="min")[0])
-            y_multimodal_fusion_max_preds.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="max")[0])
+            y_multimodal_fusion_mean_preds.extend(preds_fusion(txt_outputs, img_outputs, "mean", thr_multimodal_fusion_mean)[0])
+            y_multimodal_fusion_min_preds.extend(preds_fusion(txt_outputs, img_outputs, "min", thr_multimodal_fusion_min)[0])
+            y_multimodal_fusion_max_preds.extend(preds_fusion(txt_outputs, img_outputs, "max", thr_multimodal_fusion_max)[0])
 
-            multimodal_fusion_mean_outputs.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="mean")[1])
-            multimodal_fusion_min_outputs.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="min")[1])
-            multimodal_fusion_max_outputs.extend(preds_fusion(txt_outputs, img_outputs, labels, mode="max")[1])
+            multimodal_fusion_mean_outputs.extend(preds_fusion(txt_outputs, img_outputs, "mean"))
+            multimodal_fusion_min_outputs.extend(preds_fusion(txt_outputs, img_outputs, "min"))
+            multimodal_fusion_max_outputs.extend(preds_fusion(txt_outputs, img_outputs, "max"))
 
         # Challenging the model
         for i, (pred, output, label) in tqdm(enumerate(zip(preds, outputs.cpu().detach().numpy(), labels.cpu().numpy().tolist())), desc="Challenging the model", total=len(labels), leave=False):
@@ -191,19 +229,30 @@ def main():
                 "txt": dataset_test.texts[indices[i]],
                 "img": Image.open(os.path.join(dataset_test.img_dir, dataset_test.imgs_path[indices[i]])).convert("RGB"),
             }
+            unimodal_clean_imgs_pil_list.append(news["img"])
             # Only consider correctly classified samples
             if pred == label:
-                img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label], device=device))
-                # Ensure text corruption is significant
-                counter = 0
-                txt_similarity = 0.0
-                # Ensure that the text corruption is significant enough to potentially fool the model, but also try to keep it as high as possible to maintain semantic similarity
-                while txt_similarity < 0.5 or txt_similarity > 0.93 and counter < MAX_TXT_CORRUPTION_ATTEMPTS:
-                    new_txt_corr_news, new_txt_similarity = txt_corruption(news)
-                    if new_txt_similarity > txt_similarity:
-                        txt_corr_news = new_txt_corr_news
-                        txt_similarity = new_txt_similarity
-                    counter += 1
+                img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label], device=device_mm))
+                #breakpoint()
+                with torch.no_grad():
+                    txt_corr_news, txt_similarity = bertattack(
+                        model=model,
+                        themis_tokenizer=tokenizer,
+                        processor=processor,
+                        args=args,
+                        news=news,
+                        label=label,
+                        device=device_mm,
+                        bert_tokenizer=bertattack_tokenizer,
+                        mlm_model=bertattack_mlm,
+                        mlm_device=device_mlm,
+                    )
+                    torch.cuda.empty_cache()
+
+                # Ensure the text corruption is effective, if not use the original text as corrupted text
+                if txt_similarity < 0.5:
+                    txt_corr_news = news
+                    txt_similarity = 1.0
 
                 # Create multimodal corrupted news
                 multimodal_corr_news = {
@@ -211,11 +260,11 @@ def main():
                     "img": img_corr_news["img"],
                 }
                 # Get predictions on corrupted images only
-                img_corr_pred, img_corr_output = use_model(model, tokenizer, processor, args, img_corr_news, thr_multimodal_cross_clean)
+                img_corr_pred, img_corr_output = use_model(model, tokenizer, processor, args, img_corr_news, thr_multimodal_cross)
                 # Get predictions on corrupted text only
-                txt_corr_pred, txt_corr_output = use_model(model, tokenizer, processor, args, txt_corr_news, thr_multimodal_cross_clean)
+                txt_corr_pred, txt_corr_output = use_model(model, tokenizer, processor, args, txt_corr_news, thr_multimodal_cross)
                 # Get predictions on corrupted images and text
-                multimodal_corr_pred, multimodal_corr_output  = use_model(model, tokenizer, processor, args, multimodal_corr_news, thr_multimodal_cross_clean)
+                multimodal_corr_pred, multimodal_corr_output  = use_model(model, tokenizer, processor, args, multimodal_corr_news, thr_multimodal_cross)
                 # Save results where only multimodality corruption fools the model
                 if (int(img_corr_pred[0]) == label and int(txt_corr_pred[0]) == label and int(multimodal_corr_pred[0]) != label):
                     save_results(
@@ -229,7 +278,7 @@ def main():
                         preds={
                             "label": label,
                             "output_clean": output,
-                            "thr_multimodal_cross_clean": thr_multimodal_cross_clean,
+                            "thr_multimodal_cross": thr_multimodal_cross,
                             "pred_clean": pred,
                             "output_txt_corr": txt_corr_output[0].cpu().detach().numpy()[0],
                             "pred_txt_corr": int(txt_corr_pred[0]),
@@ -250,82 +299,135 @@ def main():
                 txt_similarity = 1.0
                 ssim_pgd = 1.0
             
-            corr_txts_list.append(txt_corr_news["txt"])
-            corr_imgs_pil_list.append(img_corr)
+            multimodal_corr_txts_list.append(txt_corr_news["txt"])
+            multimodal_corr_imgs_pil_list.append(img_corr)
 
-        # Tokenization of corrupted samples
-        corr_txts = tokenizer(corr_txts_list, return_tensors="pt", padding="max_length", truncation=True, return_attention_mask=False, max_length=args.n_tokens)
-        corr_txts = {"input_ids": corr_txts.input_ids.unsqueeze(1)}
+        # Tokenization of corrupted texts
+        multimodal_corr_txts = tokenizer(multimodal_corr_txts_list, return_tensors="pt", padding="max_length", truncation=True, return_attention_mask=False, max_length=args.n_tokens).to(device_mm)
+        multimodal_corr_txts = {"input_ids": multimodal_corr_txts.input_ids.unsqueeze(1)}
 
         # Processing of corrupted images
-        corr_imgs = processor(images=corr_imgs_pil_list, return_tensors="pt", do_normalize=False)
-        mean = torch.tensor(processor.image_mean, device=device).view(1, -1, 1, 1)
-        std = torch.tensor(processor.image_std, device=device).view(1, -1, 1, 1)
-        corr_imgs = {"pixel_values": ((corr_imgs["pixel_values"] - mean) / std)}
-        corr_imgs["pixel_values"] = corr_imgs["pixel_values"].unsqueeze(1)
+        multimodal_corr_imgs = processor(images=multimodal_corr_imgs_pil_list, return_tensors="pt", do_normalize=False).to(device_mm)
+        mean = torch.tensor(processor.image_mean, device=device_mm).view(1, -1, 1, 1)
+        std = torch.tensor(processor.image_std, device=device_mm).view(1, -1, 1, 1)
+        multimodal_corr_imgs = {"pixel_values": ((multimodal_corr_imgs["pixel_values"] - mean) / std)}
+        multimodal_corr_imgs["pixel_values"] = multimodal_corr_imgs["pixel_values"].unsqueeze(1)
         images["pixel_values"] = images["pixel_values"].unsqueeze(1)
 
-        corr_imgs_copy = {k: v.to(device) for k, v in corr_imgs.items()}
+        multimodal_corr_imgs_copy = {k: v.to(device_mm) for k, v in multimodal_corr_imgs.items()}
+
+        # Get unimodal corrupted images
+        unimodal_clean_images = processor_img(images=unimodal_clean_imgs_pil_list, return_tensors="pt", do_normalize=False)
+        unimodal_clean_images = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in unimodal_clean_images.items()}
+        wrapped_img_model = WrappedModel(img_model, fixed_txt=None, processor=processor_img).to(device_img)
+        unimodal_img_attack = torchattacks.PGD(wrapped_img_model, eps=args.epsilon, alpha=args.epsilon / (args.pgd_iters * args.alpha_factor), steps=args.pgd_iters, random_start=True,)
+        unimodal_corr_images = unimodal_img_attack(unimodal_clean_images["pixel_values"], labels.to(device_img).long())
+        unimodal_corr_images_for_model = {"pixel_values": unimodal_corr_images.unsqueeze(1)}
+        # print("unimodal clean:", unimodal_clean_images["pixel_values"].shape)
+        # print("unimodal corr:", unimodal_corr_images.shape)
+        # print("mean diff:", torch.mean(torch.abs(unimodal_clean_images["pixel_values"] - unimodal_corr_images)).item())
+        # print("max diff:", torch.max(torch.abs(unimodal_clean_images["pixel_values"] - unimodal_corr_images)).item())
+
+        # Get unimodal corrupted texts
+        unimodal_corr_txts_cpu, _ = bertattack_text_only(
+            model=txt_model,
+            themis_tokenizer=tokenizer_txt,
+            args=args,
+            dataset=dataset_test,
+            indices=indices,
+            labels=labels,
+            device=device_txt,
+            bert_tokenizer=bertattack_tokenizer,
+            mlm_model=bertattack_mlm,
+            mlm_device=device_mlm,
+        )
+        cleanup_cuda()
+        #unimodal_corr_txts = {k: v.to(device_txt) for k, v in multimodal_corr_txts.items()}
 
         # Get predictions on corrupted samples in batch
         with torch.no_grad():
-            batch_multimodal_cross_txt_corr_outputs = model(images, corr_txts)
-            thr_multimodal_cross_txt_corr, auc_multimodal_cross_txt_corr = compute_threshold(batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            txt_corr_preds = [1 if i > thr_multimodal_cross_txt_corr else 0 for i in batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy()]
+            batch_multimodal_cross_txt_corr_outputs = model(images, multimodal_corr_txts)
+            txt_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_txt_corr_preds.extend(txt_corr_preds)
             multimodal_cross_txt_corr_outputs.extend(batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy())
 
-            batch_multimodal_cross_img_corr_outputs = model(corr_imgs, text)
-            thr_multimodal_cross_img_corr, auc_multimodal_cross_img_corr = compute_threshold(batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            img_corr_preds = [1 if i > thr_multimodal_cross_img_corr else 0 for i in batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy()]
+            batch_multimodal_cross_img_corr_outputs = model(multimodal_corr_imgs, text)
+            img_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_img_corr_preds.extend(img_corr_preds)
             multimodal_cross_img_corr_outputs.extend(batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy())
 
-            corr_imgs["pixel_values"] = corr_imgs["pixel_values"].unsqueeze(1)
-            batch_multimodal_cross_corr_outputs = model(corr_imgs, corr_txts)
-            thr_multimodal_cross_corr, auc_multimodal_cross_corr = compute_threshold(batch_multimodal_cross_corr_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            multimodal_cross_corr_preds = [1 if i > thr_multimodal_cross_corr else 0 for i in batch_multimodal_cross_corr_outputs.cpu().detach().numpy()]
+            multimodal_corr_imgs["pixel_values"] = multimodal_corr_imgs["pixel_values"].unsqueeze(1)
+            batch_multimodal_cross_corr_outputs = model(multimodal_corr_imgs, multimodal_corr_txts)
+            multimodal_cross_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_corr_preds.extend(multimodal_cross_corr_preds)
             multimodal_cross_corr_outputs.extend(batch_multimodal_cross_corr_outputs.cpu().detach().numpy())
 
-            txt_corr_outputs = txt_model(images=None, texts=corr_txts)
-            thr_unimodal_txt_corr, auc_unimodal_txt_corr = compute_threshold(txt_corr_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            unimodal_txt_corr_preds = [1 if i > thr_unimodal_txt_corr else 0 for i in txt_corr_outputs.cpu().detach().numpy()]
+            unimodal_corr_txts = {
+                k: v.to(device_txt, non_blocking=True) for k, v in unimodal_corr_txts_cpu.items()
+            }
+            txt_corr_outputs = txt_model(images=None, texts=unimodal_corr_txts)
+            unimodal_txt_corr_preds = [1 if i > thr_unimodal_txt else 0 for i in txt_corr_outputs.cpu().detach().numpy()]
             y_unimodal_txt_corr_preds.extend(unimodal_txt_corr_preds)
             unimodal_txt_corr_outputs.extend(txt_corr_outputs.cpu().detach().numpy())
 
-            img_corr_outputs = img_model(images=corr_imgs_copy, texts=None)
-            thr_unimodal_img_corr, auc_unimodal_img_corr = compute_threshold(img_corr_outputs.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            unimodal_img_corr_preds = [1 if i > thr_unimodal_img_corr else 0 for i in img_corr_outputs.cpu().detach().numpy()]
+            img_corr_outputs = img_model(images=unimodal_corr_images_for_model, texts=None)
+            unimodal_img_corr_preds = [1 if i > thr_unimodal_img else 0 for i in img_corr_outputs.cpu().detach().numpy()]
             y_unimodal_img_corr_preds.extend(unimodal_img_corr_preds)
             unimodal_img_corr_outputs.extend(img_corr_outputs.cpu().detach().numpy())
 
-            y_multimodal_fusion_mean_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="mean")[0])
-            y_multimodal_fusion_min_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="min")[0])
-            y_multimodal_fusion_max_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="max")[0])
+            y_multimodal_fusion_mean_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "mean", thr_multimodal_fusion_mean)[0])
+            y_multimodal_fusion_min_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "min", thr_multimodal_fusion_min)[0])
+            y_multimodal_fusion_max_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "max", thr_multimodal_fusion_max)[0])
 
-            multimodal_fusion_mean_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="mean")[1])
-            multimodal_fusion_min_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="min")[1])
-            multimodal_fusion_max_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, labels, mode="max")[1])
+            multimodal_fusion_mean_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "mean"))
+            multimodal_fusion_min_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "min"))
+            multimodal_fusion_max_corr_outputs.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "max"))
+        
+        cleanup_cuda(
+            unimodal_corr_txts,
+            unimodal_corr_txts_cpu,
+            txt_corr_outputs,
+            img_corr_outputs,
+            unimodal_corr_images,
+            unimodal_img_attack,
+            wrapped_img_model,
+        )
+
+        cleanup_cuda(
+            images,
+            text,
+            labels,
+            images_for_img,
+            text_for_txt,
+            outputs,
+            txt_outputs,
+            img_outputs,
+            multimodal_corr_txts,
+            multimodal_corr_imgs,
+            multimodal_corr_imgs_copy,
+            batch_multimodal_cross_txt_corr_outputs,
+            batch_multimodal_cross_img_corr_outputs,
+            batch_multimodal_cross_corr_outputs,
+        )
 
     # ----- RESULTS -----
     # Classic metrics on clean samples
-    metrics_multimodal_cross_clean, cm_multimodal_cross_clean = compute_metrics(y_true, y_preds, multimodal_cross_outputs)
-    metrics_unimodal_txt_clean, cm_unimodal_txt_clean = compute_metrics(y_true, y_unimodal_txt_preds, unimodal_txt_outputs)
-    metrics_unimodal_img_clean, cm_unimodal_img_clean = compute_metrics(y_true, y_unimodal_img_preds, unimodal_img_outputs)
-    metrics_multimodal_fusion_mean, cm_multimodal_fusion_mean = compute_metrics(y_true, y_multimodal_fusion_mean_preds, multimodal_fusion_mean_outputs)
-    metrics_multimodal_fusion_min, cm_multimodal_fusion_min = compute_metrics(y_true, y_multimodal_fusion_min_preds, multimodal_fusion_min_outputs)
-    metrics_multimodal_fusion_max, cm_multimodal_fusion_max = compute_metrics(y_true, y_multimodal_fusion_max_preds, multimodal_fusion_max_outputs)
+    metrics_multimodal_cross_clean, fpr_cross_clean, tpr_cross_clean, cm_multimodal_cross_clean = compute_metrics(y_true, y_preds, multimodal_cross_outputs)
+    metrics_unimodal_txt_clean, _, _, cm_unimodal_txt_clean = compute_metrics(y_true, y_unimodal_txt_preds, unimodal_txt_outputs)
+    metrics_unimodal_img_clean, _, _, cm_unimodal_img_clean = compute_metrics(y_true, y_unimodal_img_preds, unimodal_img_outputs)
+    metrics_multimodal_fusion_mean, fpr_fusion_mean, tpr_fusion_mean, cm_multimodal_fusion_mean = compute_metrics(y_true, y_multimodal_fusion_mean_preds, multimodal_fusion_mean_outputs)
+    metrics_multimodal_fusion_min, fpr_fusion_min, tpr_fusion_min,cm_multimodal_fusion_min = compute_metrics(y_true, y_multimodal_fusion_min_preds, multimodal_fusion_min_outputs)
+    metrics_multimodal_fusion_max, fpr_fusion_max, tpr_fusion_max, cm_multimodal_fusion_max = compute_metrics(y_true, y_multimodal_fusion_max_preds, multimodal_fusion_max_outputs)
 
     # Classic metrics on corrupted samples
-    metrics_multimodal_cross_corr, cm_multimodal_cross_corr = compute_metrics(y_true, y_multimodal_cross_corr_preds, multimodal_cross_corr_outputs)
-    metrics_unimodal_txt_corr, cm_unimodal_txt_corr = compute_metrics(y_true, y_unimodal_txt_corr_preds, unimodal_txt_corr_outputs)
-    metrics_unimodal_img_corr, cm_unimodal_img_corr = compute_metrics(y_true, y_unimodal_img_corr_preds, unimodal_img_corr_outputs)
-    metrics_multimodal_fusion_mean_corr, cm_multimodal_fusion_mean_corr = compute_metrics(y_true, y_multimodal_fusion_mean_corr_preds, multimodal_fusion_mean_corr_outputs)
-    metrics_multimodal_fusion_min_corr, cm_multimodal_fusion_min_corr = compute_metrics(y_true, y_multimodal_fusion_min_corr_preds, multimodal_fusion_min_corr_outputs)
-    metrics_multimodal_fusion_max_corr, cm_multimodal_fusion_max_corr = compute_metrics(y_true, y_multimodal_fusion_max_corr_preds, multimodal_fusion_max_corr_outputs)
-    metrics_multimodal_txt_corr, cm_multimodal_txt_corr = compute_metrics(y_true, y_multimodal_cross_txt_corr_preds, multimodal_cross_txt_corr_outputs)
-    metrics_multimodal_img_corr, cm_multimodal_img_corr = compute_metrics(y_true, y_multimodal_cross_img_corr_preds, multimodal_cross_img_corr_outputs)
+    metrics_multimodal_cross_corr, fpr_cross_corr, tpr_cross_corr, cm_multimodal_cross_corr = compute_metrics(y_true, y_multimodal_cross_corr_preds, multimodal_cross_corr_outputs)
+    metrics_unimodal_txt_corr, _, _, cm_unimodal_txt_corr = compute_metrics(y_true, y_unimodal_txt_corr_preds, unimodal_txt_corr_outputs)
+    metrics_unimodal_img_corr, _, _, cm_unimodal_img_corr = compute_metrics(y_true, y_unimodal_img_corr_preds, unimodal_img_corr_outputs)
+    metrics_multimodal_fusion_mean_corr, fpr_fusion_mean_corr, tpr_fusion_mean_corr, cm_multimodal_fusion_mean_corr = compute_metrics(y_true, y_multimodal_fusion_mean_corr_preds, multimodal_fusion_mean_corr_outputs)
+    metrics_multimodal_fusion_min_corr, fpr_fusion_min_corr, tpr_fusion_min_corr, cm_multimodal_fusion_min_corr = compute_metrics(y_true, y_multimodal_fusion_min_corr_preds, multimodal_fusion_min_corr_outputs)
+    metrics_multimodal_fusion_max_corr, fpr_fusion_max_corr, tpr_fusion_max_corr, cm_multimodal_fusion_max_corr = compute_metrics(y_true, y_multimodal_fusion_max_corr_preds, multimodal_fusion_max_corr_outputs)
+    metrics_multimodal_txt_corr, fpr_cross_txt_corr, tpr_cross_txt_corr, cm_multimodal_txt_corr = compute_metrics(y_true, y_multimodal_cross_txt_corr_preds, multimodal_cross_txt_corr_outputs)
+    metrics_multimodal_img_corr, fpr_cross_img_corr, tpr_cross_img_corr, cm_multimodal_img_corr = compute_metrics(y_true, y_multimodal_cross_img_corr_preds, multimodal_cross_img_corr_outputs)
 
     # Robustness metrics
     robustness_metrics_multimodal_cross = compute_robustness_metrics(y_true, y_preds, y_multimodal_cross_corr_preds)
@@ -421,6 +523,66 @@ def main():
     print(cm_multimodal_txt_corr)
     print("Multimodal Cross Image Corrupted Confusion Matrix")
     print(cm_multimodal_img_corr)
+
+    # Plotting clean roc curves
+    clean_rocs_info = {
+        "Multimodal Cross": {
+            "fpr": fpr_cross_clean,
+            "tpr": tpr_cross_clean,
+            "roc_auc": metrics_multimodal_cross_clean["auc"],
+        },
+        "Multimodal Mean Fusion": {
+            "fpr": fpr_fusion_mean,
+            "tpr": tpr_fusion_mean,
+            "roc_auc": metrics_multimodal_fusion_mean["auc"],
+        },
+        "Multimodal Min Fusion": {
+            "fpr": fpr_fusion_min,
+            "tpr": tpr_fusion_min,
+            "roc_auc": metrics_multimodal_fusion_min["auc"],
+        },
+        "Multimodal Max Fusion": {
+            "fpr": fpr_fusion_max,
+            "tpr": tpr_fusion_max,
+            "roc_auc": metrics_multimodal_fusion_max["auc"],
+        },
+    }
+    plot_roc(clean_rocs_info, os.path.join(clean_dir, "clean_roc_curves.png"))
+
+    # Plotting corrupted roc curves
+    corr_rocs_info = {
+        "Multimodal Cross": {
+            "fpr": fpr_cross_corr,
+            "tpr": tpr_cross_corr,
+            "roc_auc": metrics_multimodal_cross_corr["auc"],
+        },
+        "Multimodal Mean Fusion": {
+            "fpr": fpr_fusion_mean_corr,
+            "tpr": tpr_fusion_mean_corr,
+            "roc_auc": metrics_multimodal_fusion_mean_corr["auc"],
+        },
+        "Multimodal Min Fusion": {
+            "fpr": fpr_fusion_min_corr,
+            "tpr": tpr_fusion_min_corr,
+            "roc_auc": metrics_multimodal_fusion_min_corr["auc"],
+        },
+        "Multimodal Max Fusion": {
+            "fpr": fpr_fusion_max_corr,
+            "tpr": tpr_fusion_max_corr,
+            "roc_auc": metrics_multimodal_fusion_max_corr["auc"],
+        },
+        "Multimodal Cross only Text Corr": {
+            "fpr": fpr_cross_txt_corr,
+            "tpr": tpr_cross_txt_corr,
+            "roc_auc": metrics_multimodal_txt_corr["auc"],
+        },
+        "Multimodal Cross Image Corr": {
+            "fpr": fpr_cross_img_corr,
+            "tpr": tpr_cross_img_corr,
+            "roc_auc": metrics_multimodal_img_corr["auc"],
+        },
+    }
+    plot_roc(corr_rocs_info, os.path.join(corr_dir, "corr_roc_curves.png"))
 
     # Print robustness metrics table
     headers = ["AUC CLEAN", "AUC TXT CORR", "AUC IMG CORR", "AUC BOTH CORR"]
@@ -533,14 +695,14 @@ def main():
         y_true,
         unimodal_txt_outputs,
         unimodal_img_outputs,
-        os.path.join(f"results/{dataset}/text_vs_image_clean.png"),
+        os.path.join(f"results/{args.dataset}/text_vs_image_clean.png"),
     )
 
     plot_text_vs_image(
         y_true,
         unimodal_txt_corr_outputs,
         unimodal_img_corr_outputs,
-        os.path.join(f"results/{dataset}/text_vs_image_corrupted.png"),
+        os.path.join(f"results/{args.dataset}/text_vs_image_corrupted.png"),
     )
 
     plot_shift_arrows(
@@ -549,7 +711,7 @@ def main():
         unimodal_img_outputs,
         unimodal_txt_corr_outputs,
         unimodal_img_corr_outputs,
-        os.path.join(f"results/{dataset}/shift_arrows.png"),
+        os.path.join(f"results/{args.dataset}/shift_arrows.png"),
     )
 
     with open(os.path.join(output_dir, "parameters.txt"), "w") as f:
@@ -567,6 +729,9 @@ def main():
         f.write(f"PGD Iterations: {args.pgd_iters}\n")
         f.write(f"Epsilon: {args.epsilon}\n")
         f.write(f"Alpha Factor: {args.alpha_factor}\n")
+        f.write(f"K Number of Candidates Bertattack: {args.k}\n")
+        f.write(f"Max Words to Attack:{args.max_words_to_attack}\n")
+        f.write(f"Max Candidates per Word:{args.max_candidates_per_word}\n")
 
 
 if __name__ == "__main__":
