@@ -575,31 +575,49 @@ def compute_metrics(y_true, y_pred, scores):
     }, fpr, tpr, conf_matr
 
 
-def compute_robustness_metrics(y_true, y_clean, y_corr):
+def compute_robustness_metrics(
+    y_true,
+    y_clean,
+    y_corr,
+    targeted=False,
+    source_label=0,
+    target_label=1,
+):
     y_true = np.array(y_true)
     y_clean = np.array(y_clean)
     y_corr = np.array(y_corr)
 
-    # Accuracy on corrupted input
+    # Accuracy on corrupted input (global)
     accuracy_on_corrupted = accuracy_score(y_true, y_corr)
-
-    # Attack Success Rate (ASR) - proportion of originally correct classifications that were flipped to an incorrect label by the attack.
-    is_correct_clean = y_clean == y_true
-    total_correct_clean = np.sum(is_correct_clean)
-    if total_correct_clean == 0:
-        asr = 0.0
-    else:
-        is_successful_attack = is_correct_clean & (y_corr != y_true)
-        successful_attacks = np.sum(is_successful_attack)
-        asr = successful_attacks / total_correct_clean
-
-    # Delta Accuracy - the difference between accuracy on clean and corrupted input
+    # Accuracy on clean
     accuracy_on_clean = accuracy_score(y_true, y_clean)
+    # Delta Accuracy (global)
     delta_acc = accuracy_on_clean - accuracy_on_corrupted
-
-    # Flip Rate - percentage of inputs were correctly classified even after perturbation
+    # Flip Rate (global)
     flip_rate = np.sum(y_clean != y_corr) / len(y_clean)
+    # ASR
+    if not targeted:
+        # STANDARD: every sample attackable
+        is_correct_clean = y_clean == y_true
+        total_correct_clean = np.sum(is_correct_clean)
 
+        if total_correct_clean == 0:
+            asr = 0.0
+        else:
+            is_successful_attack = is_correct_clean & (y_corr != y_true)
+            successful_attacks = np.sum(is_successful_attack)
+            asr = successful_attacks / total_correct_clean
+    else:
+        # TARGETED: only one class is attackable
+        is_attackable = (y_true == source_label) & (y_clean == source_label)
+        total_attackable = np.sum(is_attackable)
+        if total_attackable == 0:
+            asr = 0.0
+        else:
+            # success = flip to target label
+            is_successful_attack = is_attackable & (y_corr == target_label)
+            successful_attacks = np.sum(is_successful_attack)
+            asr = successful_attacks / total_attackable
     return {
         "accuracy_on_clean": round(accuracy_on_clean, 3),
         "accuracy_on_corrupted": round(accuracy_on_corrupted, 3),
@@ -727,12 +745,14 @@ def plot_roc(rocs_info, out_file):
         fpr = roc_data["fpr"]
         tpr = roc_data["tpr"]
         roc_auc = roc_data["roc_auc"]
+        color = roc_data["color"]
 
         plt.plot(
             fpr,
             tpr,
             linewidth=2,
-            label=f"{name} (AUC = {roc_auc:.3f})"
+            label=f"{name} (AUC = {roc_auc:.3f})",
+            color=color
         )
 
     plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1, label="Random")
