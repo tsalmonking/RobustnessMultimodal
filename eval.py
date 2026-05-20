@@ -31,7 +31,7 @@ from utils import (
     save_results,
     img_corruption,
     bertattack,
-    bertattack_text_only,
+    bertattack_text_only_single,
     txt_corruption,
     WrappedModel,
     cleanup_cuda
@@ -145,7 +145,7 @@ def main():
         shuffle=False,
         #generator=torch.Generator(device=device),
     )
-
+    
     # True labels
     y_true = []
 
@@ -175,11 +175,15 @@ def main():
     multimodal_cross_txt_corr_outputs = []
     multimodal_cross_img_corr_outputs = []
 
-    # Logits of txt only and img only
+    # Inizialization og scores and logits of txt only and img only
     unimodal_txt_outputs = []
     unimodal_img_outputs = []
+    unimodal_txt_logits = []
+    unimodal_img_logits = []
     unimodal_txt_corr_outputs = []
+    unimodal_txt_corr_logits = []
     unimodal_img_corr_outputs = []
+    unimodal_img_corr_logits = []
 
     # Logits of multimodal fusion
     multimodal_fusion_mean_outputs = []
@@ -189,9 +193,9 @@ def main():
     multimodal_fusion_min_corr_outputs = []
     multimodal_fusion_max_corr_outputs = []
     count = 0
+    to_pil = T.ToPILImage()
     for images, labels, text, _, indices in tqdm(dataloader_test, desc="Evaluating", total=len(dataloader_test)):
-        # if count == 1:
-        #    break
+        # if count == 10:   break
         # count += 1
         images = {k: v.to(device_mm) if torch.is_tensor(v) else v for k, v in images.items()}
         text = {k: v.to(device_mm) if torch.is_tensor(v) else v for k, v in text.items()}
@@ -202,25 +206,29 @@ def main():
         multimodal_corr_txts_list = []
         multimodal_corr_imgs_pil_list = []
         unimodal_clean_imgs_pil_list = []
+        unimodal_corr_imgs_list = []
+        unimodal_corr_txts_list = []
         indices = indices.tolist()
         
         # Clean predictions
         with torch.no_grad():
-            outputs = model(images, text)
-            preds = [1 if i > thr_multimodal_cross else 0 for i in outputs.cpu().detach().numpy()]
+            outputs, _ = model(images, text)
+            preds = [args.target_label if i > thr_multimodal_cross else args.source_label for i in outputs.cpu().detach().numpy()]
             y_preds.extend(preds)
             multimodal_cross_outputs.extend(outputs.cpu().detach().numpy())
             y_true.extend(labels.cpu().numpy())
 
-            txt_outputs = txt_model(images=None, texts=text_for_txt)
-            txt_preds = [1 if i > thr_unimodal_txt else 0 for i in txt_outputs.cpu().detach().numpy()]
+            txt_outputs, txt_logits = txt_model(images=None, texts=text_for_txt)
+            txt_preds = [args.target_label if i > thr_unimodal_txt else args.source_label for i in txt_outputs.cpu().detach().numpy()]
             y_unimodal_txt_preds.extend(txt_preds)
             unimodal_txt_outputs.extend(txt_outputs.cpu().detach().numpy())
+            unimodal_txt_logits.extend(txt_logits.cpu().detach().numpy())
 
-            img_outputs = img_model(images=images_for_img, texts=None)
-            img_preds = [1 if i > thr_unimodal_img else 0 for i in img_outputs.cpu().detach().numpy()]
+            img_outputs, img_logits = img_model(images=images_for_img, texts=None)
+            img_preds = [args.target_label if i > thr_unimodal_img else args.source_label for i in img_outputs.cpu().detach().numpy()]
             y_unimodal_img_preds.extend(img_preds)
             unimodal_img_outputs.extend(img_outputs.cpu().detach().numpy())
+            unimodal_img_logits.extend(img_logits.cpu().detach().numpy())
 
             y_multimodal_fusion_mean_preds.extend(preds_fusion(txt_outputs, img_outputs, "mean", thr_multimodal_fusion_mean)[0])
             y_multimodal_fusion_min_preds.extend(preds_fusion(txt_outputs, img_outputs, "min", thr_multimodal_fusion_min)[0])
@@ -230,8 +238,24 @@ def main():
             multimodal_fusion_min_outputs.extend(preds_fusion(txt_outputs, img_outputs, "min"))
             multimodal_fusion_max_outputs.extend(preds_fusion(txt_outputs, img_outputs, "max"))
 
+
+        # print("labels:", labels)
+        # print("multimodal scores:", multimodal_cross_outputs)
+        # print("multimodal preds:", preds)
+        # print("munimodal txt scores:", unimodal_txt_outputs)
+        # print("unimodal txt logits:", unimodal_txt_logits)
+        # print("unimodal img scores:", unimodal_img_outputs)
+        # print("unimodal img logits:", unimodal_img_logits)
+        
+        # print("multimodal mean scores:", multimodal_fusion_mean_outputs)
+        # print("multimodal mean preds:", y_multimodal_fusion_mean_preds)
+        # print("multimodal min scores:", multimodal_fusion_min_outputs)
+        # print("multimodal min preds:", y_multimodal_fusion_min_preds)
+        # print("multimodal max scores:", multimodal_fusion_max_outputs)
+        # print("multimodal max preds:", y_multimodal_fusion_max_preds)
+
         # Challenging the model
-        for i, (pred, output, label) in tqdm(enumerate(zip(preds, outputs.cpu().detach().numpy(), labels.cpu().numpy().tolist())), desc="Challenging the model", total=len(labels), leave=False):
+        for i, (pred, txt_pred, img_pred, output, label) in tqdm(enumerate(zip(preds, txt_preds, img_preds, outputs.cpu().detach().numpy(), labels.cpu().numpy().tolist())), desc="Challenging the model", total=len(labels), leave=False):
             # Clean news
             news = {
                 "txt": dataset_test.texts[indices[i]],
@@ -239,9 +263,8 @@ def main():
             }
             unimodal_clean_imgs_pil_list.append(news["img"])
             # Only consider correctly classified samples
-            if pred == label and label == 0:
+            if label == args.source_label:
                 img_corr_news, ssim_pgd, proccess_img = img_corruption(model, tokenizer, processor, args, news, torch.tensor([label], device=device_mm))
-                #breakpoint()
                 with torch.no_grad():
                     txt_corr_news, txt_similarity = bertattack(
                         model=model,
@@ -268,11 +291,11 @@ def main():
                     "img": img_corr_news["img"],
                 }
                 # Get predictions on corrupted images only
-                img_corr_pred, img_corr_output = use_model(model, tokenizer, processor, args, img_corr_news, thr_multimodal_cross)
+                img_corr_pred, img_corr_output, _ = use_model(model, tokenizer, processor, args, img_corr_news, thr_multimodal_cross)
                 # Get predictions on corrupted text only
-                txt_corr_pred, txt_corr_output = use_model(model, tokenizer, processor, args, txt_corr_news, thr_multimodal_cross)
+                txt_corr_pred, txt_corr_output, _ = use_model(model, tokenizer, processor, args, txt_corr_news, thr_multimodal_cross)
                 # Get predictions on corrupted images and text
-                multimodal_corr_pred, multimodal_corr_output  = use_model(model, tokenizer, processor, args, multimodal_corr_news, thr_multimodal_cross)
+                multimodal_corr_pred, multimodal_corr_output, _  = use_model(model, tokenizer, processor, args, multimodal_corr_news, thr_multimodal_cross)
                 # Save results where only multimodality corruption fools the model
                 if (int(img_corr_pred[0]) == label and int(txt_corr_pred[0]) == label and int(multimodal_corr_pred[0]) != label):
                     save_results(
@@ -299,89 +322,133 @@ def main():
                         txt_similarity=txt_similarity,
                     )
                 # Prepare corrupted samples for batch evaluation
-                to_pil = T.ToPILImage()
                 img_corr = to_pil(img_corr_news["img"].squeeze(0).cpu())
             else:
                 img_corr = news["img"]
                 txt_corr_news = news
                 txt_similarity = 1.0
                 ssim_pgd = 1.0
-            
             multimodal_corr_txts_list.append(txt_corr_news["txt"])
             multimodal_corr_imgs_pil_list.append(img_corr)
 
-        # Tokenization of corrupted texts
+            if label == args.source_label:
+                unimodal_clean_image = processor_img(images=news["img"], return_tensors="pt", do_normalize=False)
+                unimodal_clean_image = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in unimodal_clean_image.items()}
+                wrapped_img_model = WrappedModel(img_model, fixed_txt=None, processor=processor_img).to(device_img)
+                unimodal_img_attack = torchattacks.PGD(wrapped_img_model, eps=args.epsilon, alpha=args.epsilon / (args.pgd_iters * args.alpha_factor), steps=args.pgd_iters, random_start=True,)
+                unimodal_corr_image = unimodal_img_attack(unimodal_clean_image["pixel_values"], torch.tensor([label], device=device_img).long())
+                img_pil = to_pil(unimodal_corr_image.squeeze(0).cpu())
+            else:
+                img_pil = news["img"]
+            unimodal_corr_imgs_list.append(img_pil)
+            
+            if label == args.source_label:
+                with torch.no_grad():
+                    unimodal_corr_txt, txt_similarity = bertattack_text_only_single(
+                        model=txt_model,
+                        themis_tokenizer=tokenizer_txt,
+                        args=args,
+                        txt=news["txt"],
+                        label=label,
+                        device=device_txt,
+                        bert_tokenizer=bertattack_tokenizer,
+                        mlm_model=bertattack_mlm,
+                        mlm_device=device_mlm,
+                    )
+                    torch.cuda.empty_cache()
+
+                if txt_similarity < 0.5:
+                    unimodal_corr_txt = news["txt"]
+                    txt_similarity = 1.0
+
+                unimodal_corr_txts_list.append(unimodal_corr_txt)
+            else:
+                unimodal_corr_txts_list.append(news["txt"])
+
+        # Tokenization of multimodal corrupted texts
         multimodal_corr_txts = tokenizer(multimodal_corr_txts_list, return_tensors="pt", padding="max_length", truncation=True, return_attention_mask=False, max_length=args.n_tokens).to(device_mm)
         multimodal_corr_txts = {"input_ids": multimodal_corr_txts.input_ids.unsqueeze(1)}
+        # Tokenization of unimodal corrupted texts
+        unimodal_corr_txts = tokenizer_txt(unimodal_corr_txts_list, return_tensors="pt", padding="max_length", truncation=True, return_attention_mask=False, max_length=args.n_tokens).to(device_txt)
+        unimodal_corr_txts = {"input_ids": unimodal_corr_txts.input_ids.unsqueeze(1)}
 
-        # Processing of corrupted images
+        # Processing of multimodal corrupted images
         multimodal_corr_imgs = processor(images=multimodal_corr_imgs_pil_list, return_tensors="pt", do_normalize=False).to(device_mm)
         mean = torch.tensor(processor.image_mean, device=device_mm).view(1, -1, 1, 1)
         std = torch.tensor(processor.image_std, device=device_mm).view(1, -1, 1, 1)
         multimodal_corr_imgs = {"pixel_values": ((multimodal_corr_imgs["pixel_values"] - mean) / std)}
         multimodal_corr_imgs["pixel_values"] = multimodal_corr_imgs["pixel_values"].unsqueeze(1)
         images["pixel_values"] = images["pixel_values"].unsqueeze(1)
-
         multimodal_corr_imgs_copy = {k: v.to(device_mm) for k, v in multimodal_corr_imgs.items()}
 
+        # Processing of unimodal corrupted images
+        unimodal_corr_imgs = processor_img(images=unimodal_corr_imgs_list, return_tensors="pt", do_normalize=False).to(device_img)
+        mean = torch.tensor(processor_img.image_mean, device=device_img).view(1, -1, 1, 1)
+        std = torch.tensor(processor_img.image_std, device=device_img).view(1, -1, 1, 1)
+        unimodal_corr_imgs = {"pixel_values": ((unimodal_corr_imgs["pixel_values"] - mean) / std)}
+        unimodal_corr_imgs["pixel_values"] = unimodal_corr_imgs["pixel_values"].unsqueeze(1)
+        unimodal_corr_imgs_copy = {k: v.to(device_img) for k, v in unimodal_corr_imgs.items()}
+
         # Get unimodal corrupted images
-        unimodal_clean_images = processor_img(images=unimodal_clean_imgs_pil_list, return_tensors="pt", do_normalize=False)
-        unimodal_clean_images = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in unimodal_clean_images.items()}
-        wrapped_img_model = WrappedModel(img_model, fixed_txt=None, processor=processor_img).to(device_img)
-        unimodal_img_attack = torchattacks.PGD(wrapped_img_model, eps=args.epsilon, alpha=args.epsilon / (args.pgd_iters * args.alpha_factor), steps=args.pgd_iters, random_start=True,)
-        unimodal_corr_images = unimodal_img_attack(unimodal_clean_images["pixel_values"], labels.to(device_img).long())
-        unimodal_corr_images_for_model = {"pixel_values": unimodal_corr_images.unsqueeze(1)}
+        # unimodal_clean_images = processor_img(images=unimodal_clean_imgs_pil_list, return_tensors="pt", do_normalize=False)
+        # unimodal_clean_images = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in unimodal_clean_images.items()}
+        # wrapped_img_model = WrappedModel(img_model, fixed_txt=None, processor=processor_img).to(device_img)
+        # unimodal_img_attack = torchattacks.PGD(wrapped_img_model, eps=args.epsilon, alpha=args.epsilon / (args.pgd_iters * args.alpha_factor), steps=args.pgd_iters, random_start=True,)
+        # unimodal_corr_images = unimodal_img_attack(unimodal_clean_images["pixel_values"], labels.to(device_img).long())
+        # unimodal_corr_images_for_model = {"pixel_values": unimodal_corr_images.unsqueeze(1)}
         # print("unimodal clean:", unimodal_clean_images["pixel_values"].shape)
         # print("unimodal corr:", unimodal_corr_images.shape)
         # print("mean diff:", torch.mean(torch.abs(unimodal_clean_images["pixel_values"] - unimodal_corr_images)).item())
         # print("max diff:", torch.max(torch.abs(unimodal_clean_images["pixel_values"] - unimodal_corr_images)).item())
 
         # Get unimodal corrupted texts
-        unimodal_corr_txts_cpu, _ = bertattack_text_only(
-            model=txt_model,
-            themis_tokenizer=tokenizer_txt,
-            args=args,
-            dataset=dataset_test,
-            indices=indices,
-            labels=labels,
-            device=device_txt,
-            bert_tokenizer=bertattack_tokenizer,
-            mlm_model=bertattack_mlm,
-            mlm_device=device_mlm,
-        )
-        cleanup_cuda()
+        # unimodal_corr_txts_cpu, _ = bertattack_text_only(
+        #     model=txt_model,
+        #     themis_tokenizer=tokenizer_txt,
+        #     args=args,
+        #     dataset=dataset_test,
+        #     indices=indices,
+        #     labels=labels,
+        #     device=device_txt,
+        #     bert_tokenizer=bertattack_tokenizer,
+        #     mlm_model=bertattack_mlm,
+        #     mlm_device=device_mlm,
+        # )
+        # cleanup_cuda()
         #unimodal_corr_txts = {k: v.to(device_txt) for k, v in multimodal_corr_txts.items()}
 
         # Get predictions on corrupted samples in batch
         with torch.no_grad():
-            batch_multimodal_cross_txt_corr_outputs = model(images, multimodal_corr_txts)
-            txt_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy()]
+            batch_multimodal_cross_txt_corr_outputs, _ = model(images, multimodal_corr_txts)
+            txt_corr_preds = [args.target_label if i > thr_multimodal_cross else args.source_label for i in batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_txt_corr_preds.extend(txt_corr_preds)
             multimodal_cross_txt_corr_outputs.extend(batch_multimodal_cross_txt_corr_outputs.cpu().detach().numpy())
 
-            batch_multimodal_cross_img_corr_outputs = model(multimodal_corr_imgs, text)
-            img_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy()]
+            batch_multimodal_cross_img_corr_outputs, _ = model(multimodal_corr_imgs, text)
+            img_corr_preds = [args.target_label if i > thr_multimodal_cross else args.source_label for i in batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_img_corr_preds.extend(img_corr_preds)
             multimodal_cross_img_corr_outputs.extend(batch_multimodal_cross_img_corr_outputs.cpu().detach().numpy())
 
             multimodal_corr_imgs["pixel_values"] = multimodal_corr_imgs["pixel_values"].unsqueeze(1)
-            batch_multimodal_cross_corr_outputs = model(multimodal_corr_imgs, multimodal_corr_txts)
-            multimodal_cross_corr_preds = [1 if i > thr_multimodal_cross else 0 for i in batch_multimodal_cross_corr_outputs.cpu().detach().numpy()]
+            batch_multimodal_cross_corr_outputs, _ = model(multimodal_corr_imgs, multimodal_corr_txts)
+            multimodal_cross_corr_preds = [args.target_label if i > thr_multimodal_cross else args.source_label for i in batch_multimodal_cross_corr_outputs.cpu().detach().numpy()]
             y_multimodal_cross_corr_preds.extend(multimodal_cross_corr_preds)
             multimodal_cross_corr_outputs.extend(batch_multimodal_cross_corr_outputs.cpu().detach().numpy())
 
             unimodal_corr_txts = {
-                k: v.to(device_txt, non_blocking=True) for k, v in unimodal_corr_txts_cpu.items()
+                k: v.to(device_txt, non_blocking=True) for k, v in unimodal_corr_txts.items()
             }
-            txt_corr_outputs = txt_model(images=None, texts=unimodal_corr_txts)
-            unimodal_txt_corr_preds = [1 if i > thr_unimodal_txt else 0 for i in txt_corr_outputs.cpu().detach().numpy()]
+            txt_corr_outputs, txt_corr_logits = txt_model(images=None, texts=unimodal_corr_txts)
+            unimodal_txt_corr_preds = [args.target_label if i > thr_unimodal_txt else args.source_label for i in txt_corr_outputs.cpu().detach().numpy()]
             y_unimodal_txt_corr_preds.extend(unimodal_txt_corr_preds)
             unimodal_txt_corr_outputs.extend(txt_corr_outputs.cpu().detach().numpy())
+            unimodal_txt_corr_logits.extend(txt_corr_logits.cpu().detach().numpy())
 
-            img_corr_outputs = img_model(images=unimodal_corr_images_for_model, texts=None)
-            unimodal_img_corr_preds = [1 if i > thr_unimodal_img else 0 for i in img_corr_outputs.cpu().detach().numpy()]
+            img_corr_outputs, img_corr_logits = img_model(images=unimodal_corr_imgs_copy, texts=None)
+            unimodal_img_corr_preds = [args.target_label if i > thr_unimodal_img else args.source_label for i in img_corr_outputs.cpu().detach().numpy()]
             y_unimodal_img_corr_preds.extend(unimodal_img_corr_preds)
             unimodal_img_corr_outputs.extend(img_corr_outputs.cpu().detach().numpy())
+            unimodal_img_corr_logits.extend(img_corr_logits.cpu().detach().numpy())
 
             y_multimodal_fusion_mean_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "mean", thr_multimodal_fusion_mean)[0])
             y_multimodal_fusion_min_corr_preds.extend(preds_fusion(txt_corr_outputs, img_corr_outputs, "min", thr_multimodal_fusion_min)[0])
@@ -393,12 +460,11 @@ def main():
         
         cleanup_cuda(
             unimodal_corr_txts,
-            unimodal_corr_txts_cpu,
             txt_corr_outputs,
             img_corr_outputs,
-            unimodal_corr_images,
-            unimodal_img_attack,
-            wrapped_img_model,
+            txt_corr_logits,
+            img_corr_logits,
+            unimodal_corr_imgs,
         )
 
         cleanup_cuda(
@@ -752,24 +818,26 @@ def main():
 
     plot_text_vs_image(
         y_true,
-        unimodal_txt_outputs,
-        unimodal_img_outputs,
+        unimodal_txt_logits,
+        unimodal_img_logits,
         os.path.join(f"results/{args.dataset}/text_vs_image_clean.png"),
+        "CLEAN"
     )
 
     plot_text_vs_image(
         y_true,
-        unimodal_txt_corr_outputs,
-        unimodal_img_corr_outputs,
+        unimodal_txt_corr_logits,
+        unimodal_img_corr_logits,
         os.path.join(f"results/{args.dataset}/text_vs_image_corrupted.png"),
+        "CORRUPTED"
     )
 
     plot_shift_arrows(
         y_true,
-        unimodal_txt_outputs,
-        unimodal_img_outputs,
-        unimodal_txt_corr_outputs,
-        unimodal_img_corr_outputs,
+        unimodal_txt_logits,
+        unimodal_img_logits,
+        unimodal_txt_corr_logits,
+        unimodal_img_corr_logits,
         os.path.join(f"results/{args.dataset}/shift_arrows.png"),
     )
 

@@ -112,9 +112,10 @@ class Themis(nn.Module):
         
         #print(x.shape)
         #pass through the lm head
-        x = self.lm_head(x)
+        logits = self.lm_head(x)
+        scores = torch.sigmoid(logits)
         
-        return x
+        return scores, logits
 
 
 def get_Themis(
@@ -164,7 +165,7 @@ def get_Themis(
     new_head = torch.nn.Sequential(
         torch.nn.LayerNorm(model.config.hidden_size),
         torch.nn.Linear(model.config.hidden_size, 1, bias=False),
-        torch.nn.Sigmoid(),
+        #torch.nn.Sigmoid(),
     )
 
     # freeze the model
@@ -198,7 +199,7 @@ def get_Themis(
         )
         model = get_peft_model(model, config)
         model = model.base_model.model
-    print(model)
+    # print(model)
     model.lm_head = new_head
     themis = Themis(img_embed, model, is_pythia=is_pythia, merge_tokens=merge_tokens)
 
@@ -206,16 +207,16 @@ def get_Themis(
     for name, param in themis.named_parameters():
         if "cls" in name:
             param.requires_grad = True
-            print("Themis unfreeze cls token: ", name)
+            # print("Themis unfreeze cls token: ", name)
 
-    print("Themis: pre unfreeze norm layers")
-    print_trainable_parameters(themis)
+    # print("Themis: pre unfreeze norm layers")
+    # print_trainable_parameters(themis)
     # unfreeze the norm layers
     for name, param in themis.named_parameters():
         if "norm" in name:
             param.requires_grad = True
 
-    print("Themis: post unfreeze norm layers")
-    print_trainable_parameters(themis)
+    # print("Themis: post unfreeze norm layers")
+    # print_trainable_parameters(themis)
 
     return themis, tokenizer, processor

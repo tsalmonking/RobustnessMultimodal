@@ -32,6 +32,7 @@ import my_datasets
 from themis_model import get_Themis
 from bertattack import attack, Feature
 from prompt import LLM_CORRUPTER_PROMPT
+from config import TARGETED, SOURCE_LABEL, TARGET_LABEL
 
 # Utilities for logging
 def info(msg):
@@ -78,9 +79,9 @@ class WrappedModel(torch.nn.Module):
                     raise ValueError(
                         f"Batch mismatch for {key}: text batch={tensor.size(0)}, image batch={x.size(0)}"
                     )
-            out = self.model({"pixel_values": x}, fixed_txt_repeated)
+            out, _ = self.model({"pixel_values": x}, fixed_txt_repeated)
         else:
-            out = self.model({"pixel_values": x}, None)
+            out, _ = self.model({"pixel_values": x}, None)
         if out.ndim == 1:
             out = out.unsqueeze(1)
         logits = torch.cat((1 - out, out), dim=1)
@@ -138,7 +139,7 @@ class BertAttackThemisWrapper(torch.nn.Module):
 
         images = {"pixel_values": pixel_values}
 
-        outputs = self.themis_model(images, themis_tokens)  # [B,1] o [B]
+        outputs, _ = self.themis_model(images, themis_tokens)  # [B,1] o [B]
 
         del themis_tokens, images
         
@@ -179,7 +180,7 @@ class BertAttackTextOnlyWrapper(torch.nn.Module):
         themis_tokens = {k: v.to(self.device) for k, v in themis_tokens.items()}
 
         with torch.inference_mode():
-            outputs = self.text_model(images=None, texts=themis_tokens)
+            outputs, _ = self.text_model(images=None, texts=themis_tokens)
             del themis_tokens
             if outputs.ndim == 1:
                 outputs = outputs.unsqueeze(1)
@@ -209,14 +210,14 @@ def use_model(model, tokenizer, processor, args, news, thr, modality=None):
     # Using the model
     with torch.no_grad():
         if modality == "text":
-            output = model(images=None, texts=token_txt)
+            output, logits = model(images=None, texts=token_txt)
         elif modality == "image":
-            output = model(images=process_img, texts=None)
+            output, logits = model(images=process_img, texts=None)
         else:
-            output = model(process_img, token_txt)
+            output, logits = model(process_img, token_txt)
         preds = [1 if i > thr else 0 for i in output.cpu().detach().numpy()]
 
-    return preds, output
+    return preds, output, logits
 
 def save_img(img, save_path):
     to_pil = T.ToPILImage()
@@ -296,6 +297,7 @@ def bertattack(
         mlm_device=mlm_device,
         max_words_to_attack=args.max_words_to_attack,
         max_candidates_per_word=args.max_candidates_per_word,
+        max_words_for_importance=args.max_words_for_importance
     )
 
     corr_txt = attacked_feat.final_adverse
@@ -555,6 +557,10 @@ def load_model(device, args, modality=None):
 # -----------------------
 
 def compute_metrics(y_true, y_pred, scores):
+    # y_true = 1-np.asarray(y_true)
+    # y_pred = 1-np.asarray(y_pred)
+    # scores = 1-np.asarray(scores)
+
     acc = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred)
     rec = recall_score(y_true, y_pred)
@@ -579,13 +585,13 @@ def compute_robustness_metrics(
     y_true,
     y_clean,
     y_corr,
-    targeted=False,
-    source_label=0,
-    target_label=1,
+    targeted=TARGETED,
+    source_label=SOURCE_LABEL,
+    target_label=TARGET_LABEL,
 ):
-    y_true = np.array(y_true)
-    y_clean = np.array(y_clean)
-    y_corr = np.array(y_corr)
+    # y_true = 1-np.asarray(y_true)
+    # y_clean = 1-np.asarray(y_clean)
+    # y_corr = 1-np.asarray(y_corr)
 
     # Accuracy on corrupted input (global)
     accuracy_on_corrupted = accuracy_score(y_true, y_corr)
@@ -638,11 +644,14 @@ def plot_confusion_matrix(cm, labels, out_file):
     plt.savefig(out_file)
     plt.close()
 
-def plot_text_vs_image( y_true, logits_text, logits_image, out_file):
+def plot_text_vs_image(y_true, logits_text, logits_image, out_file, title):
     logits_text = np.asarray(logits_text).reshape(-1)
     logits_image = np.asarray(logits_image).reshape(-1)
     y_true = np.asarray(y_true).reshape(-1)
 
+    # mask_fake = 1-y_true == 1
+    # mask_real = 1-y_true == 0
+    
     mask_fake = y_true == 0
     mask_real = y_true == 1
 
@@ -650,19 +659,25 @@ def plot_text_vs_image( y_true, logits_text, logits_image, out_file):
 
     # Fake = cerchio vuoto rosso
     plt.scatter(
+        # 1-logits_text[mask_fake],
+        # 1-logits_image[mask_fake],
         logits_text[mask_fake],
         logits_image[mask_fake],
         c='red',
         label='Fake (label=0)',
+        # label='Fake (label=1)',
         alpha=0.8
     )
 
     # Real = cerchio pieno blu
     plt.scatter(
+        # 1-logits_text[mask_real],
+        # 1-logits_image[mask_real],
         logits_text[mask_real],
         logits_image[mask_real],
         c='blue',
         label='Real (label=1)',
+        # label='Real (label=0)',
         alpha=0.8
     )
 
@@ -671,7 +686,7 @@ def plot_text_vs_image( y_true, logits_text, logits_image, out_file):
 
     plt.xlabel("Logit testo")
     plt.ylabel("Logit immagine")
-    plt.title("Scatter logit: testo vs immagine")
+    plt.title(f"[{title.upper()}]Scatter logit: testo vs immagine")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -686,6 +701,10 @@ def plot_shift_arrows(
     logit_image_corr,
     out_file
 ):
+    # x0 = 1-np.asarray(logit_text_clean).reshape(-1)
+    # y0 = 1-np.asarray(logit_image_clean).reshape(-1)
+    # x1 = 1-np.asarray(logit_text_corr).reshape(-1)
+    # y1 = 1-np.asarray(logit_image_corr).reshape(-1)
     x0 = np.asarray(logit_text_clean).reshape(-1)
     y0 = np.asarray(logit_image_clean).reshape(-1)
     x1 = np.asarray(logit_text_corr).reshape(-1)
@@ -706,6 +725,8 @@ def plot_shift_arrows(
 
     plt.figure(figsize=(10, 10))
 
+    # mask_fake = 1-y_true == 1
+    # mask_real = 1-y_true == 0
     mask_fake = y_true == 0
     mask_real = y_true == 1
 
