@@ -1,21 +1,27 @@
 # RobustnessMultimodal
 
-Official repository for evaluating the **multimodal robustness** of the Themis model through adversarial attacks on both text and image inputs.
+Official repository for evaluating the robustness of the Themis model and its unimodal components under adversarial perturbations applied to text, images, or both modalities.
+
+The project is organized as a modular pipeline. Clean inference, adversarial attacks, late-fusion construction, metric computation, and ROC-curve generation are executed through separate scripts.
 
 ---
 
-## Main requirements
-- Python == 3.10
-- CUDA 11.8 compatible
-- torch 2.1.2
-- torchvision 0.16.2
-- numpy 1.26.4
+## Requirements
+
+Reference environment:
+
+- Python 3.10
+- CUDA 11.8
+- PyTorch 2.1.2
+- Torchvision 0.16.2
+- NumPy 1.26.4
+
+The remaining dependencies are listed in `requirements.txt`.
 
 ---
 
-## Usage Guide
+## 1. Clone the repository
 
-### Step 1: Clone the repository
 ```bash
 git clone https://github.com/Davi2082/RobustnessMultimodal.git
 cd RobustnessMultimodal
@@ -23,85 +29,114 @@ cd RobustnessMultimodal
 
 ---
 
-### Step 2: Create a Python 3.10 environment with pyenv
+## 2. Create a Python 3.10 environment
 
-If you don't already have Python 3.10 installed, you can easily set it up using **pyenv**.
+### Linux and macOS
 
-#### Install pyenv (Linux/MacOS)
-pyenv should be already available, install Python 3.10 and set it as your active version:
 ```bash
 pyenv install 3.10
 pyenv local 3.10
-```
 
-#### Install pyenv (Windows)
-On Windows, install **pyenv-win** following the official instructions:
-```bash
-git clone https://github.com/pyenv-win/pyenv-win.git %USERPROFILE%\.pyenv
-setx PATH "%USERPROFILE%\.pyenv\pyenv-win\bin;%USERPROFILE%\.pyenv\pyenv-win\shims;%PATH%"
-```
-
-Then in PowerShell:
-```powershell
-pyenv install 3.10
-pyenv local 3.10
-```
-
-After this, verify that the correct Python version is active:
-```bash
-python --version
-# Should print Python 3.10.x
-```
-
----
-
-### Step 3: Create and activate a virtual environment
-**On Linux/MacOS:**
-```bash
 python -m venv venv
 source venv/bin/activate
 ```
 
-**On Windows (PowerShell):**
-```bash
+### Windows PowerShell
+
+```powershell
+pyenv install 3.10
+pyenv local 3.10
+
 python -m venv venv
 venv\Scripts\activate
 ```
 
+Verify the Python version:
+
+```bash
+python --version
+```
+
+The output should be Python 3.10.x.
+
 ---
 
-### Step 4: Install dependencies
+## 3. Install the dependencies
 
-Install the base packages:
+Install the packages declared by the repository:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-Install specific versions of PyTorch and Torchvision. For CUDA 11.8 versions are the following:
+Install the version for your CUDA builds of PyTorch and Torchvision:
+
 ```bash
-pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 \
+  --index-url https://download.pytorch.org/whl/cu118
 ```
 
-Install NumPy:
+Install the NumPy version used by the reference environment:
+
 ```bash
 pip install numpy==1.26.4
 ```
 
 ---
 
-### Step 5: Folder and Dataset setup
+## 4. Configure the project
 
-Before running the code, you need to set up the dataset structure and model weights:
+Default values are defined in `configuration.py`.
 
-#### Dataset Structure
-Create a folder in the `data/` directory for each dataset you want to test. Each dataset folder must contain:
-- `images/` → subdirectory containing all dataset images
-- `test.*` → test annotations file (can be `.csv`, `.tsv`, or other formats)
-- Additional annotation files as needed (e.g., `train.*`, `val.*`)
+Before running the pipeline, check at least:
 
-**Example structure:**
-```
-Data/
+- model and encoder names;
+- model-weight paths;
+- batch size;
+- maximum number of text tokens;
+- classification threshold;
+- result root directory;
+- PGD parameters;
+- BERTAttack parameters;
+- source and target labels;
+- asymmetric-attack setting.
+
+Most values can also be overridden through command-line arguments.
+
+### CUDA devices
+
+The current scripts contain explicit CUDA assignments:
+
+- `eval.py` uses `cuda`;
+- `image_attack.py` uses `cuda:1`;
+- `text_attack.py` uses `cuda:1` for the classifier and `cuda:2` for BERT;
+- `multimodal_attack.py` uses `cuda:1` for the classifier and `cuda:2` for BERT.
+
+Adapt these assignments to the available hardware.
+
+For a single-GPU machine, replace them with `cuda:0`, provided that enough memory is available.
+
+---
+
+## 5. Prepare the datasets
+
+Each dataset must be stored inside the `data/` directory.
+
+A dataset folder must contain:
+
+- an `images/` directory;
+- one test annotation file matching `test.*`;
+- any additional train or validation files required by the dataset implementation.
+
+Example:
+
+```text
+data/
+├── Recovery/
+│   ├── images/
+│   ├── test.csv
+│   ├── train.csv
+│   └── val.csv
 ├── Fakeddit/
 │   ├── images/
 │   │   ├── test/
@@ -110,94 +145,799 @@ Data/
 │   ├── test.tsv
 │   ├── train.tsv
 │   └── val.tsv
-├── Recovery/
-│   ├── images/
-│   ├── test.csv
-│   └── ...
 └── YourNewDataset/
     ├── images/
-    ├── test.csv
-    └── ...
+    └── test.csv
 ```
 
-#### Dataset Class Definition
-For each new dataset added to `data/`, you must define the corresponding class and load function in `my_datasets.py`:
+The scripts locate the test annotations with:
 
-1. Create a class named `{DatasetName}_Dataset` (e.g., `YourNewDataset_Dataset`)
-2. Create a function named `{datasetname}_load_annotations_file()` (e.g., `yournewdataset_load_annotations_file()`)
+```python
+glob.glob(f"data/{dataset}/test.*")[0]
+```
 
-#### Model Weights
-You must place your pretrained model weights in the `model/` directory
+Each dataset directory should therefore contain only one intended test annotation file matching that pattern.
+
+### Adding a new dataset
+
+For every new dataset, define the corresponding dataset class and annotation loader in `my_datasets.py`.
+
+Expected naming convention:
+
+```text
+{DatasetName}_Dataset
+{datasetname}_load_annotations_file
+```
+
+Example:
+
+```text
+YourNewDataset_Dataset
+yournewdataset_load_annotations_file
+```
+
+Available datasets are discovered dynamically through `load_available_datasets()`.
 
 ---
 
-### Step 7: Running the attack on Themis
+## 6. Prepare the model weights
 
-Once the folders are created and all dependencies are installed, you can run the multimodal robustness evaluation with:
+Place pretrained weights in the `model/` directory or provide their paths through `--model_path`.
 
-```bash
-python eval.py
+The pipeline supports three base predictive models:
+
+| Model identifier | Input |
+| --- | --- |
+| `feature-fusion` | Text and image |
+| `text` | Text only |
+| `image` | Image only |
+
+The following late-fusion configurations are derived from the scores generated independently by the text and image models:
+
+- `late-fusion-mean`;
+- `late-fusion-min`;
+- `late-fusion-max`.
+
+The text and image models may use different weight files. Make sure that each clean evaluation uses the correct model path.
+
+---
+
+## 7. Result-directory structure
+
+The metric and plotting scripts expect the following structure:
+
+```text
+data/
+└── Recovery/
+    └── classification_results/
+        ├── clean/
+        │   ├── feature-fusion/
+        │   │   ├── results.csv
+        │   │   └── parameters.json
+        │   ├── text/
+        │   │   ├── results.csv
+        │   │   └── parameters.json
+        │   ├── image/
+        │   │   ├── results.csv
+        │   │   └── parameters.json
+        │   └── late-fusion/
+        │       ├── mean/
+        │       ├── min/
+        │       └── max/
+        └── perturbed/
+            ├── feature-fusion/
+            │   ├── perturbed_results.csv
+            │   ├── parameters.json
+            │   ├── text-perturbed/
+            │   │   └── perturbed_results.csv
+            │   └── image-perturbed/
+            │       └── perturbed_results.csv
+            ├── text/
+            │   ├── perturbed_results.csv
+            │   └── parameters.json
+            ├── image/
+            │   ├── perturbed_results.csv
+            │   └── parameters.json
+            └── late-fusion/
+                ├── mean/
+                ├── min/
+                └── max/
 ```
 
-By default, this will execute the full pipeline with predefined parameters and save the results to the `results/` directory.
+### Path consistency
 
-**Optional arguments**
-You can customize the execution by passing arguments directly from the command line:
-```bash
-python eval.py \\
-  --name_llm \"phi3:instruct\" \\
-  --name_img_embed \"openclip-ViT-B-16\" \\
-  --batch_size 8 \\
-  --model_path \"model/themis_weights.pt\" \\
-  --n_tokens 128 \\
-  --pgd_iters 30 \\
-  --epsilon 0.0078 \\
-  --alpha_factor 2.0 \\
-  --dataset_path \"Data/ReCOVery/test.csv\" \\
-  --images_path \"Data/ReCOVery/images\" \\
-  --results_path \"results/\"
+Some scripts use paths derived from `--results_path` and `--dataset`, while others currently contain ReCOVery-specific paths.
+
+Before running the complete pipeline, make sure that the following all refer to the same result tree:
+
+1. `RESULT_PATH` in `configuration.py`;
+2. the `--results_path` command-line argument;
+3. hardcoded paths in the attack scripts;
+4. the `BASE` path in `late_fusion_perturbation.py`;
+5. the base path in `metrics.py`.
+
+The commands below assume:
+
+```text
+data/Recovery/classification_results
 ```
 
-**Available parameters**
+as the result root.
+
+---
+
+## 8. Run clean inference
+
+Clean inference is performed with `eval.py`.
+
+The main required argument is `--modality`.
+
+### 8.1 Feature-fusion model
+
+```bash
+python eval.py --modality feature-fusion
+```
+
+The model receives both clean text and clean images.
+
+Configuration name:
+
+```text
+feature-fusion|clean
+```
+
+### 8.2 Text model
+
+```bash
+python eval.py --modality text
+```
+
+The model receives only clean text.
+
+Configuration name:
+
+```text
+text|clean
+```
+
+### 8.3 Image model
+
+```bash
+python eval.py --modality image
+```
+
+The model receives only clean images.
+
+Configuration name:
+
+```text
+image|clean
+```
+
+### 8.4 Clean late fusion
+
+`eval.py` accepts `late-fusion` and one aggregation mode:
+
+```bash
+python eval.py --modality late-fusion --mode mean
+```
+
+Available modes:
+
+```text
+mean
+min
+max
+```
+
+---
+
+## 9. `eval.py` arguments
 
 | Argument | Type | Description |
-| :--- | :--- | :--- |
-| `--name_llm` | str | Language model used for text corruption (default: Phi-3:instruct) |
-| `--name_img_embed` | str | Image encoder name (default: OpenCLIP ViT-B/16 variant) |
-| `--batch_size` | int | Batch size for evaluation |
-| `--model_path` | str | Path to the model weights |
-| `--n_tokens` | int | Maximum token length for text encoder |
-| `--merge_tokens` | int | Token merging factor (optional, usually left at 0) |
-| `--use_lora` | bool | Enable LoRA fine-tuning (optional) |
-| `--lora_alpha`, `--lora_r`, `--lora_dropout` | various | LoRA configuration options — see Themis documentation for details |
-| `--set_params` | bool | Whether to use default model parameters (default: True) |
-| `--pgd_iters` | int | Number of PGD iterations (default: 30) |
-| `--epsilon` | float | Maximum perturbation magnitude (default: 2/255) |
-| `--alpha_factor` | float | Step size scaling factor for PGD |
-| `--results_path` | str | Output directory for evaluation results |
-| `--dataset` | str | Name of the dataset to evaluate. Must match one of the available dataset folders inside `data/`. Default: `Fakeddit` |
+| --- | --- | --- |
+| `--modality` | `str` | `feature-fusion`, `intermediate-fusion`, `late-fusion`, `text`, or `image` |
+| `--mode` | `str` | Late-fusion aggregation: `mean`, `min`, or `max` |
+| `--threshold` | `float` | Classification threshold |
+| `--name_llm` | `str` | Text-encoder model name |
+| `--name_img_embed` | `str` | Image-encoder model name |
+| `--batch_size` | `int` | Evaluation batch size |
+| `--model_path` | `str` | Path to model weights |
+| `--n_tokens` | `int` | Maximum text length in tokens |
+| `--merge_tokens` | `int` | Token-merging parameter |
+| `--lora_alpha` | `int` | LoRA alpha |
+| `--lora_r` | `int` | LoRA rank |
+| `--lora_dropout` | `float` | LoRA dropout |
+| `--use_lora` | `bool` | Whether LoRA is enabled |
+| `--set_params` | `bool` | Whether model parameters are configured automatically |
+| `--results_path` | `str` | Root directory for results |
+| `--dataset` | `str` | Dataset discovered from `my_datasets.py` |
 
-**Example run**
-```bash
-python eval.py --pgd_iters 30 --epsilon 0.0078 --alpha_factor 2.0 --batch_size 8
+Clean evaluation creates:
+
+```text
+results.csv
+parameters.json
 ```
-All results (confusion matrices, metrics, and JSON logs) will be automatically saved under the `results/` directory.
+
+Late-fusion evaluation also creates a text-vs-image diagnostic plot.
+
+---
+
+## 10. Run adversarial attacks
+
+The attack scripts load model settings from the `parameters.json` files generated by clean inference.
+
+Clean evaluation for the corresponding model must therefore be completed first.
+
+The attack direction is controlled by:
+
+```text
+--asymmetric
+--source_label
+--target_label
+```
+
+In the current scripts, perturbations are generated for samples whose ground-truth label matches `source_label`. Samples from the other class remain clean.
+
+---
+
+### 10.1 Text-model attack
+
+Prerequisite:
+
+```text
+clean/text/parameters.json
+```
+
+Run:
+
+```bash
+python text_attack.py
+```
+
+The script:
+
+1. loads the clean text-model parameters;
+2. loads `bert-base-uncased` for BERTAttack;
+3. generates adversarial text;
+4. evaluates the text model on the perturbed input;
+5. saves predictions and attack parameters.
+
+Expected output:
+
+```text
+perturbed/text/perturbed_results.csv
+perturbed/text/parameters.json
+```
+
+Configuration name:
+
+```text
+text|perturbed
+```
+
+Relevant arguments:
+
+```text
+--k
+--threshold_pred_score
+--max_words_to_attack
+--max_candidates_per_word
+--max_words_for_importance
+--source_label
+--target_label
+--asymmetric
+```
+
+---
+
+### 10.2 Image-model attack
+
+Prerequisite:
+
+```text
+clean/image/parameters.json
+```
+
+Run:
+
+```bash
+python image_attack.py
+```
+
+The script applies PGD to the image model and evaluates it on perturbed images.
+
+Expected output:
+
+```text
+perturbed/image/perturbed_results.csv
+perturbed/image/parameters.json
+```
+
+Configuration name:
+
+```text
+image|perturbed
+```
+
+Relevant arguments:
+
+```text
+--pgd_iters
+--epsilon
+--alpha_factor
+--source_label
+--target_label
+--asymmetric
+```
+
+---
+
+### 10.3 Feature-fusion attack
+
+Prerequisite:
+
+```text
+clean/feature-fusion/parameters.json
+```
+
+Run:
+
+```bash
+python multimodal_attack.py
+```
+
+For each attacked sample, the script generates both a text perturbation and an image perturbation.
+
+The same feature-fusion model is then evaluated in three input conditions:
+
+1. perturbed text and perturbed image;
+2. perturbed text and clean image;
+3. clean text and perturbed image.
+
+Generated files:
+
+```text
+feature-fusion/perturbed_results.csv
+feature-fusion/parameters.json
+
+feature-fusion/text-perturbed/perturbed_results.csv
+feature-fusion/text-perturbed/parameters.json
+
+feature-fusion/image-perturbed/perturbed_results.csv
+feature-fusion/image-perturbed/parameters.json
+```
+
+Relevant arguments:
+
+```text
+--pgd_iters
+--epsilon
+--alpha_factor
+--k
+--threshold_pred_score
+--max_words_to_attack
+--max_candidates_per_word
+--max_words_for_importance
+--source_label
+--target_label
+--asymmetric
+```
+
+---
+
+## 11. Build perturbed late-fusion results
+
+Late fusion is constructed from the perturbed scores produced independently by the text and image models.
+
+Prerequisites:
+
+```text
+perturbed/text/perturbed_results.csv
+perturbed/image/perturbed_results.csv
+perturbed/text/parameters.json
+perturbed/image/parameters.json
+```
+
+Run:
+
+```bash
+python late_fusion_perturbation.py
+```
+
+The script creates:
+
+```text
+perturbed/late-fusion/mean/
+perturbed/late-fusion/min/
+perturbed/late-fusion/max/
+```
+
+Configuration names:
+
+```text
+late-fusion-mean|biperturbed
+late-fusion-min|biperturbed
+late-fusion-max|biperturbed
+```
+
+`biperturbed` means that:
+
+- the text score is produced from perturbed text;
+- the image score is produced from a perturbed image;
+- the two scores are subsequently aggregated.
+
+The current script uses this fixed base path:
+
+```text
+data/Recovery/classification_results/perturbed
+```
+
+Change `BASE` when using another dataset or result location.
+
+---
+
+## 12. Compute metrics
+
+Use `metrics.py` to compute metrics, save `metrics.json`, create a confusion matrix, and optionally update a ROC comparison group.
+
+### Feature fusion
+
+Clean:
+
+```bash
+python metrics.py --type clean --modality feature-fusion
+```
+
+Both modalities perturbed:
+
+```bash
+python metrics.py --type perturbed --modality feature-fusion
+```
+
+Only text perturbed:
+
+```bash
+python metrics.py --type perturbed --modality feature-fusion --mode text-perturbed
+```
+
+Only image perturbed:
+
+```bash
+python metrics.py --type perturbed --modality feature-fusion --mode image-perturbed
+```
+
+### Text model
+
+```bash
+python metrics.py --type clean --modality text
+python metrics.py --type perturbed --modality text
+```
+
+### Image model
+
+```bash
+python metrics.py --type clean --modality image
+python metrics.py --type perturbed --modality image
+```
+
+### Late fusion
+
+Clean:
+
+```bash
+python metrics.py --type clean --modality late-fusion --mode mean
+python metrics.py --type clean --modality late-fusion --mode min
+python metrics.py --type clean --modality late-fusion --mode max
+```
+
+Perturbed:
+
+```bash
+python metrics.py --type perturbed --modality late-fusion --mode mean
+python metrics.py --type perturbed --modality late-fusion --mode min
+python metrics.py --type perturbed --modality late-fusion --mode max
+```
+
+Each configuration produces:
+
+```text
+metrics.json
+confusion_matrix.png
+```
+
+The current implementation inverts labels, predictions, and scores before computing the metrics:
+
+```python
+y_true = 1 - y_true
+y_pred = 1 - y_pred
+scores = 1 - scores
+```
+
+This makes the fake-news class the positive class for precision, recall, F1, and ROC/AUC.
+
+The current script uses:
+
+```text
+data/Recovery/classification_results
+```
+
+as a fixed root.
+
+---
+
+## 13. Generate ROC plots
+
+Run:
+
+```bash
+python create_rocs_plots.py
+```
+
+The script repeatedly invokes `metrics.py` and builds four comparison groups:
+
+1. clean multimodal configurations;
+2. perturbed multimodal configurations;
+3. clean unimodal configurations;
+4. perturbed unimodal configurations.
+
+ROC labels use the `model|input` convention, for example:
+
+```text
+feature-fusion|clean
+feature-fusion|text-perturbed
+feature-fusion|image-perturbed
+feature-fusion|biperturbed
+text|clean
+text|perturbed
+image|clean
+image|perturbed
+late-fusion-mean|clean
+late-fusion-mean|biperturbed
+```
+
+The ROC cache is updated one curve at a time, and the corresponding comparison plot is regenerated after every update.
+
+---
+
+## 14. Complete execution order
+
+For a complete ReCOVery experiment, use the following order.
+
+### Step 1: generate clean predictions
+
+```bash
+python eval.py --modality feature-fusion
+python eval.py --modality text
+python eval.py --modality image
+```
+
+Optionally create the clean late-fusion configurations:
+
+```bash
+python eval.py --modality late-fusion --mode mean
+python eval.py --modality late-fusion --mode min
+python eval.py --modality late-fusion --mode max
+```
+
+### Step 2: generate adversarial predictions
+
+```bash
+python multimodal_attack.py
+python text_attack.py
+python image_attack.py
+```
+
+### Step 3: organize feature-fusion outputs
+
+Place:
+
+```text
+txts_perturbed_results.csv
+```
+
+at:
+
+```text
+perturbed/feature-fusion/text-perturbed/perturbed_results.csv
+```
+
+Place:
+
+```text
+imgs_perturbed_results.csv
+```
+
+at:
+
+```text
+perturbed/feature-fusion/image-perturbed/perturbed_results.csv
+```
+
+### Step 4: construct perturbed late fusion
+
+```bash
+python late_fusion_perturbation.py
+```
+
+### Step 5: compute metrics and generate ROC curves
+
+```bash
+python create_rocs_plots.py
+```
+
+---
+
+## 15. Minimal workflows
+
+The complete pipeline does not need to be executed for every experiment.
+
+### Clean feature fusion only
+
+```bash
+python eval.py --modality feature-fusion
+python metrics.py --type clean --modality feature-fusion
+```
+
+### Text robustness only
+
+```bash
+python eval.py --modality text
+python text_attack.py
+python metrics.py --type clean --modality text
+python metrics.py --type perturbed --modality text
+```
+
+### Image robustness only
+
+```bash
+python eval.py --modality image
+python image_attack.py
+python metrics.py --type clean --modality image
+python metrics.py --type perturbed --modality image
+```
+
+### Compare feature-fusion input conditions
+
+```bash
+python eval.py --modality feature-fusion
+python multimodal_attack.py
+
+python metrics.py --type perturbed --modality feature-fusion
+python metrics.py --type perturbed --modality feature-fusion --mode text-perturbed
+python metrics.py --type perturbed --modality feature-fusion --mode image-perturbed
+```
+
+### Perturbed late fusion only
+
+```bash
+python eval.py --modality text  --dataset Recovery --model_path model/text_model_weights.pt
+python eval.py --modality image --dataset Recovery --model_path model/image_model_weights.pt
+
+python text_attack.py
+python image_attack.py
+python late_fusion_perturbation.py
+
+python metrics.py --type perturbed --modality late-fusion --mode mean
+python metrics.py --type perturbed --modality late-fusion --mode min
+python metrics.py --type perturbed --modality late-fusion --mode max
+```
+
+---
+
+## 16. Output files
+
+Depending on the executed scripts, a result directory may contain:
+
+| File | Description |
+| --- | --- |
+| `results.csv` | Clean labels, predictions, scores, logits, and sample indices |
+| `perturbed_results.csv` | Predictions produced from perturbed inputs |
+| `parameters.json` | Model and attack parameters |
+| `metrics.json` | Classification and ROC/AUC metrics |
+| `confusion_matrix.png` | Confusion matrix |
+| `text_vs_image_clean.png` | Text-versus-image diagnostic plot for clean late fusion |
+| ROC cache files | Stored FPR, TPR, and AUC values |
+| ROC plots | Comparison curves for the selected ROC group |
+
+---
+
+## 17. Troubleshooting
+
+### A clean `parameters.json` file cannot be found
+
+The attack scripts depend on files generated by `eval.py`.
+
+Run clean inference for the corresponding model first and verify that the path used by the attack script matches the actual output path.
+
+### CUDA device error
+
+Change the explicit `cuda:1` or `cuda:2` assignments to devices available on the current machine.
+
+### A feature-fusion single-modality result cannot be found
+
+Copy:
+
+```text
+txts_perturbed_results.csv
+```
+
+to:
+
+```text
+perturbed/feature-fusion/text-perturbed/perturbed_results.csv
+```
+
+Copy:
+
+```text
+imgs_perturbed_results.csv
+```
+
+to:
+
+```text
+perturbed/feature-fusion/image-perturbed/perturbed_results.csv
+```
+
+### Results are written to an unexpected location
+
+Check:
+
+- `RESULT_PATH` in `configuration.py`;
+- `--results_path`;
+- the dataset name;
+- hardcoded paths in the attack scripts;
+- `BASE` in `late_fusion_perturbation.py`;
+- the base path in `metrics.py`.
+
+### The test annotation file is not found
+
+Ensure that this pattern matches an existing file:
+
+```text
+data/<DatasetName>/test.*
+```
+
+### BERTAttack cannot load its masked-language model
+
+The first execution downloads:
+
+```text
+bert-base-uncased
+```
+
+through Hugging Face Transformers.
+
+For offline execution, download and cache the model beforehand.
 
 ---
 
 ## Experiments
-The main results of the experiments described in the thesis are available in the [`experiments/`] folder.
-Each subfolder includes a `README.md` file that documents the parameters, metrics, and observations related to each run.
+
+Experiment outputs may be stored in the `experiments/` directory.
 
 ---
 
-## Dataset and Model
-**Dataset:** ReCOVery, adapted following Is-It-Fake-Or-Not https://github.com/demon-prin/Is-It-Fake-Or-Not.
+## Dataset and model
 
-**Model:** Themis (OpenCLIP ViT-B/16 variant). Model weights must be trained or requested separately.
+**Dataset:** ReCOVery, adapted following the `Is-It-Fake-Or-Not` project:
 
-## Original repository
+https://github.com/demon-prin/Is-It-Fake-Or-Not
+
+**Models:** Themis, its text-only variant, and its image-only variant.
+
+Pretrained weights are not distributed automatically by this repository and must be trained, requested, or provided separately.
+
+---
+
+## Repository
+
 https://github.com/Davi2082/RobustnessMultimodal
 
+---
+
 ## License
+
 Distributed under the MIT License.
