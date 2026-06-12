@@ -113,6 +113,7 @@ class Themis(nn.Module):
         #print(x.shape)
         #pass through the lm head
         logits = self.lm_head(x)
+        #logits *= -1
         scores = torch.sigmoid(logits)
         
         return scores, logits

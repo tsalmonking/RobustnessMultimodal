@@ -3,6 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import pandas as pd
 import torchattacks
 import torchvision.transforms as T
 import ollama
@@ -31,8 +32,7 @@ import my_datasets
 
 from themis_model import get_Themis
 from bertattack import attack, Feature
-from prompt import LLM_CORRUPTER_PROMPT
-from config import TARGETED, SOURCE_LABEL, TARGET_LABEL
+from configuration import ASYMMETRIC_ATTACK, SOURCE_LABEL, TARGET_LABEL
 
 # Utilities for logging
 def info(msg):
@@ -49,6 +49,22 @@ def cleanup_cuda(*objs):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
+def load_available_datasets():
+    # Get available datasets from Data directory
+    available_datasets = [d for d in os.listdir("data") if os.path.isdir(os.path.join("data", d))]
+    # Create mappings dynamically
+    dataset_classes = {}
+    load_functions = {}
+    for dataset in available_datasets:
+        class_name = f"{dataset}_Dataset"
+        load_name = f"{dataset.lower()}_load_annotations_file"
+        try:
+            dataset_classes[dataset] = getattr(my_datasets, class_name)
+            load_functions[dataset] = getattr(my_datasets, load_name)
+        except AttributeError:
+            print(f"Warning: Class {class_name} or function {load_name} not found in my_datasets.py for dataset {dataset}")
+    return dataset_classes, load_functions
 
 # The wrapped model for PGD attack, to get only one modality perturbed
 class WrappedModel(torch.nn.Module):
@@ -128,20 +144,22 @@ class BertAttackThemisWrapper(torch.nn.Module):
 
         themis_tokens = {k: v.to(self.device) for k, v in themis_tokens.items()}
 
-        # repeat immagine se batch > 1
-        pixel_values = self.fixed_images["pixel_values"]
-        if pixel_values.size(0) == 1 and len(texts) > 1:
-            pixel_values = pixel_values.repeat(len(texts), 1, 1, 1, 1)
-        elif pixel_values.size(0) != len(texts):
-            raise ValueError(
-                f"Image batch mismatch: image batch={pixel_values.size(0)}, text batch={len(texts)}"
-            )
+        if self.args.modality == "feature-fusion" or self.args.modality == "intermediate-fusion":
+            # repeat immagine se batch > 1
+            pixel_values = self.fixed_images["pixel_values"]
+            if pixel_values.size(0) == 1 and len(texts) > 1:
+                pixel_values = pixel_values.repeat(len(texts), 1, 1, 1, 1)
+            elif pixel_values.size(0) != len(texts):
+                raise ValueError(
+                    f"Image batch mismatch: image batch={pixel_values.size(0)}, text batch={len(texts)}"
+                )
+            images = {"pixel_values": pixel_values}
+            outputs, _ = self.themis_model(images, themis_tokens)  # [B,1] o [B]
+            del images
+        else:
+            outputs, _ = self.themis_model(None, themis_tokens)  # [B,1] o [B]
 
-        images = {"pixel_values": pixel_values}
-
-        outputs, _ = self.themis_model(images, themis_tokens)  # [B,1] o [B]
-
-        del themis_tokens, images
+        del themis_tokens
         
         if outputs.ndim == 1:
             outputs = outputs.unsqueeze(1)
@@ -179,12 +197,12 @@ class BertAttackTextOnlyWrapper(torch.nn.Module):
         )
         themis_tokens = {k: v.to(self.device) for k, v in themis_tokens.items()}
 
-        with torch.inference_mode():
-            outputs, _ = self.text_model(images=None, texts=themis_tokens)
-            del themis_tokens
-            if outputs.ndim == 1:
-                outputs = outputs.unsqueeze(1)
-            logits = torch.cat((1 - outputs, outputs), dim=1)
+        # with torch.inference_mode():
+        outputs, _ = self.text_model(images=None, texts=themis_tokens)
+        del themis_tokens
+        if outputs.ndim == 1:
+            outputs = outputs.unsqueeze(1)
+        logits = torch.cat((1 - outputs, outputs), dim=1)
         return (logits,)
 
 def use_model(model, tokenizer, processor, args, news, thr, modality=None):
@@ -223,7 +241,7 @@ def save_img(img, save_path):
     to_pil = T.ToPILImage()
     to_pil(img.squeeze(0).cpu().float()).save(save_path)
 
-def img_corruption(model, tokenizer, processor, args, news, label):
+def img_perturbation(model, tokenizer, processor, args, news, label):
     device = label.device
     # Text tokenization for fixed text
     token_txt = tokenizer(
@@ -492,56 +510,59 @@ def save_results(
     with open(os.path.join(result_dir, "result.json"), "w") as f:
         json.dump(result_data, f, indent=4)
 
+def save_predictions(y_true, y_preds, scores, logits, indices, output_dir):
+    data = {
+            'index': indices,
+            'label': y_true,
+            'pred': y_preds,
+            'score': scores,
+            'logit': logits
+        }
+    
+    df = pd.DataFrame(data)
+    df.to_csv(output_dir, index=False)
+
 
 # -----------------------
 # Model loading
 # -----------------------
 
-def load_model(device, args, modality=None):
-    if modality is None:
-        name_img_embed = "openai/clip-vit-base-patch32"
-        model_path = "model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt"
-    else:
-        name_img_embed = args.name_img_embed
-        model_path = args.model_path
+def load_model(device, args, correct_model_path=None):
+    if args.modality == "feature-fusion" or args.modality == "intermediate-fusion":
+        args.name_img_embed = "openai/clip-vit-base-patch32"
+        args.model_path = "model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt"
 
-    name_llm = args.name_llm
-    merge_tokens = args.merge_tokens
-    if merge_tokens == 0:
-        merge_tokens = None
-    lora_alpha = args.lora_alpha
-    lora_r = args.lora_r
-    lora_dropout = args.lora_dropout
-    use_lora = args.use_lora
-    set_params = args.set_params
-    if set_params:
-        p = model_path.split("\\")[-1].split("_")
-        lora_alpha = int(p[2])
-        lora_r = int(p[3])
-        lora_dropout = float(p[4])
-        use_lora = True if "True" in p[5] else False
+    if args.merge_tokens == 0:
+        args.merge_tokens = None
+    if args.set_params:
+        p = args.model_path.split("\\")[-1].split("_")
+        args.lora_alpha = int(p[2])
+        args.lora_r = int(p[3])
+        args.lora_dropout = float(p[4])
+        args.use_lora = True if "True" in p[5] else False
 
     model, tokenizer, processor = get_Themis(
-        name_llm=name_llm,
-        name_img_embed=name_img_embed,
-        use_lora=use_lora,
-        is_pythia=True if "pythia" in name_llm else False,
-        lora_alpha=lora_alpha,
-        lora_r=lora_r,
-        lora_dropout=lora_dropout,
-        merge_tokens=merge_tokens,
+        name_llm=args.name_llm,
+        name_img_embed=args.name_img_embed,
+        use_lora=args.use_lora,
+        is_pythia=True if "pythia" in args.name_llm else False,
+        lora_alpha=args.lora_alpha,
+        lora_r=args.lora_r,
+        lora_dropout=args.lora_dropout,
+        merge_tokens=args.merge_tokens,
         device=device
     )
 
-    if modality == "text":
-        model_path = model_path.replace(".pt", "_txt_only.pt")
-    elif modality == "image":
-        model_path = model_path.replace(".pt", "_img_only.pt")
+    if correct_model_path is None:
+        if args.modality == "text":
+            args.model_path = args.model_path.replace(".pt", "_txt_only.pt")
+        elif args.modality == "image":
+            args.model_path = args.model_path.replace(".pt", "_img_only.pt")
 
-    if os.path.exists(model_path):
+    if os.path.exists(args.model_path):
         try:
             # when a serious GPU will be available change map_location to device
-            model.load_state_dict(torch.load(model_path, map_location=device))
+            model.load_state_dict(torch.load(args.model_path, map_location=device))
         except Exception:
             error("Error loading weights, it will be used random weights. The results will be meaningless.")
     else:
@@ -557,10 +578,6 @@ def load_model(device, args, modality=None):
 # -----------------------
 
 def compute_metrics(y_true, y_pred, scores):
-    # y_true = 1-np.asarray(y_true)
-    # y_pred = 1-np.asarray(y_pred)
-    # scores = 1-np.asarray(scores)
-
     acc = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred)
     rec = recall_score(y_true, y_pred)
@@ -585,13 +602,15 @@ def compute_robustness_metrics(
     y_true,
     y_clean,
     y_corr,
-    targeted=TARGETED,
+    ASYMMETRIC_ATTACK=ASYMMETRIC_ATTACK,
     source_label=SOURCE_LABEL,
     target_label=TARGET_LABEL,
 ):
     # y_true = 1-np.asarray(y_true)
     # y_clean = 1-np.asarray(y_clean)
     # y_corr = 1-np.asarray(y_corr)
+
+    y_true = [abs(i-1) for i in y_true]
 
     # Accuracy on corrupted input (global)
     accuracy_on_corrupted = accuracy_score(y_true, y_corr)
@@ -602,7 +621,7 @@ def compute_robustness_metrics(
     # Flip Rate (global)
     flip_rate = np.sum(y_clean != y_corr) / len(y_clean)
     # ASR
-    if not targeted:
+    if not ASYMMETRIC_ATTACK:
         # STANDARD: every sample attackable
         is_correct_clean = y_clean == y_true
         total_correct_clean = np.sum(is_correct_clean)
@@ -614,7 +633,7 @@ def compute_robustness_metrics(
             successful_attacks = np.sum(is_successful_attack)
             asr = successful_attacks / total_correct_clean
     else:
-        # TARGETED: only one class is attackable
+        # ASYMMETRIC_ATTACK: only one class is attackable
         is_attackable = (y_true == source_label) & (y_clean == source_label)
         total_attackable = np.sum(is_attackable)
         if total_attackable == 0:
@@ -790,10 +809,10 @@ def plot_roc(rocs_info, out_file):
     plt.savefig(out_file)
     plt.close()
 
-def compute_threshold(model, processor, tokenizer, dataset_classes, load_functions, args, device_mm, device_txt, device_img, modality, model2=None, mode=None, th=None):
+def compute_threshold(model, processor, tokenizer, device, args, model2=None, mode=None):
     # Select dataset class and load function dynamically
-    dataset_class = dataset_classes[args.dataset]
-    load_func = load_functions[args.dataset]
+    dataset_class = getattr(my_dataset, f"{args.dataset}_Dataset")
+    load_func = getattr(f"{args.dataset.lower()}_load_annotations_file")
 
     dataset_val = my_datasets.get_dataset(
         dataset_class,
@@ -812,46 +831,155 @@ def compute_threshold(model, processor, tokenizer, dataset_classes, load_functio
     )
 
     y, y_preds = [], []
-    with torch.no_grad():
-        for images, labels, texts, _, _ in tqdm(dataloader_val, desc="Threshold computation", total=len(dataloader_val), leave=False):
-            images = images.to(device_mm)
-            texts = texts.to(device_mm)
-            images_for_img = {k: v.to(device_img) if torch.is_tensor(v) else v for k, v in images.items()}
-            texts_for_txt = {k: v.to(device_txt) if torch.is_tensor(v) else v for k, v in texts.items()}
-            if modality == "multimodal":
-                outputs = model(images, texts)
-                y_preds.extend(outputs.to("cpu").detach().numpy())
-            elif modality == "unimodal_txt":
-                outputs = model(None, texts_for_txt)
-                y_preds.extend(outputs.to("cpu").detach().numpy())
-            elif modality == "unimodal_img":
-                outputs = model(images_for_img, None)
-                y_preds.extend(outputs.to("cpu").detach().numpy())
-            else:
-                outputs1 = model(None, texts_for_txt)
-                outputs2 = model2(images_for_img, None)
-                fused_outputs = preds_fusion(outputs1, outputs2, mode)
-                y_preds.extend(fused_outputs)
-            y.extend(labels.to("cpu").numpy())
+    for images, labels, texts, _, _ in tqdm(dataloader_val, desc="Threshold computation", total=len(dataloader_val), leave=False):
+        images = images.to(device)
+        texts = texts.to(device)
+        if modality == "multimodal":
+            outputs = model(images, texts)
+            y_preds.extend(outputs.to("cpu").detach().numpy())
+        elif modality == "unimodal_txt":
+            outputs = model(None, texts_for_txt)
+            y_preds.extend(outputs.to("cpu").detach().numpy())
+        elif modality == "unimodal_img":
+            outputs = model(images_for_img, None)
+            y_preds.extend(outputs.to("cpu").detach().numpy())
+        else:
+            outputs1 = model(None, texts_for_txt)
+            outputs2 = model2(images_for_img, None)
+            fused_outputs = preds_fusion(outputs1, outputs2, mode)
+            y_preds.extend(fused_outputs)
+        y.extend(labels.to("cpu").numpy())
 
     fpr, tpr, thr = roc_curve(y, y_preds)
     best_thr = thr[(tpr - fpr).argmax()]
     return best_thr
 
-def preds_fusion(first_modality_outputs, second_modality_outputs, mode="mean", th=None):
-    first_modality_outputs = first_modality_outputs.detach().cpu()
-    second_modality_outputs = second_modality_outputs.detach().cpu()
+def preds_fusion(first_modality_outputs, second_modality_outputs, mode):
+    first_modality_outputs = first_modality_outputs
+    second_modality_outputs = second_modality_outputs
     if mode == "mean":
         fused_scores = (first_modality_outputs + second_modality_outputs) / 2
     elif mode == "max":
-        fused_scores = torch.max(first_modality_outputs, second_modality_outputs)
+        fused_scores = np.maximum(first_modality_outputs, second_modality_outputs)
     elif mode == "min":
-        fused_scores = torch.min(first_modality_outputs, second_modality_outputs)
+        fused_scores = np.minimum(first_modality_outputs, second_modality_outputs)
     else:
         raise ValueError(f"Invalid fusion mode: {mode}")
+    
+    return fused_scores
 
-    if th is not None:
-        fused_preds = [1 if s > th else 0 for s in fused_scores]
-        return fused_preds, fused_scores.detach().cpu().numpy().reshape(-1)
+def create_late_fusion(text_csv, image_csv, output_dir, fusion_type):
+    text_df = pd.read_csv(text_csv)
+    image_df = pd.read_csv(image_csv)
+
+    assert len(text_df) == len(image_df)
+    assert (text_df["index"] == image_df["index"]).all()
+
+    if fusion_type == "mean":
+        scores = (text_df["score"] + image_df["score"]) / 2
+    elif fusion_type == "min":
+        scores = pd.concat([text_df["score"], image_df["score"]],axis=1).min(axis=1)
+    elif fusion_type == "max":
+        scores = pd.concat([text_df["score"], image_df["score"]],axis=1).max(axis=1)
+
+    preds = (scores >= 0.5).astype(int)
+
+    result_df = pd.DataFrame({
+        "index": text_df["index"],
+        "label": text_df["label"],
+
+        "score": scores,
+        "pred": preds,
+
+        "text_score": text_df["score"],
+        "image_score": image_df["score"],
+        "text_logit": text_df["logit"],
+        "image_logit": image_df["logit"],
+    })
+
+    os.makedirs(output_dir, exist_ok=True)
+    result_df.to_csv(os.path.join(output_dir, "perturbed_results.csv"), index=False)
+
+    return result_df
+
+def create_late_fusion_parameters(text_parameters, image_parameters, output_dir, fusion_type):
+    with open(text_parameters) as f:
+        txt_params = json.load(f)
+
+    with open(image_parameters) as f:
+        img_params = json.load(f)
+
+    params = {
+        "fusion_type": fusion_type,
+        "text_parameters": txt_params,
+        "image_parameters": img_params
+    }
+
+    with open(os.path.join(output_dir, "parameters.json"),"w") as f:
+        json.dump(params, f, indent=2)
+
+def build_curve_name(args):
+    name = args.modality
+    if args.modality == "late-fusion" or args.modality == "feature-fusion" or  args.modality == "intermediate-fusion":
+        if args.mode is not None:
+            name += f"-{args.mode}"
+    return name
+
+def update_roc_cache( roc_set, curve_name, auc, fpr, tpr):
+    roc_dir = "data/Recovery/classification_results/rocs/roc_sets"
+    os.makedirs(roc_dir, exist_ok=True)
+
+    roc_file = os.path.join(roc_dir, f"{roc_set}.json")
+
+    if os.path.exists(roc_file):
+        with open(roc_file) as f:
+            roc_cache = json.load(f)
     else:
-        return fused_scores.detach().cpu().numpy().reshape(-1)
+        roc_cache = {}
+
+    roc_cache[curve_name] = {
+        "auc": float(auc),
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
+    }
+
+    with open(roc_file, "w") as f:
+        json.dump(roc_cache, f, indent=2)
+
+    return roc_cache
+
+
+def regenerate_plot(roc_cache, roc_set):
+    os.makedirs("data/Recovery/classification_results/rocs/roc_plots", exist_ok=True)
+    plt.figure(figsize=(10, 10))
+
+    COLORS = [
+        "blue",
+        "red",
+        "green",
+        "orange",
+        "purple",
+        "brown",
+        "pink",
+        "gray",
+        "cyan",
+        "olive",
+    ]
+
+    for i, (name, data) in enumerate(roc_cache.items()):
+        color = COLORS[i % len(COLORS)]
+
+        plt.plot(data["fpr"], data["tpr"], color=color, linewidth=2, label=f"{name} (AUC={data['auc']:.3f})")
+
+    plt.plot([0, 1], [0, 1], linestyle="--", color="black", label="Random")
+
+    plt.xlim(0, 1)
+    plt.ylim(0, 1.02)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"ROC Comparison - {roc_set}")
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join("data/Recovery/classification_results/rocs/roc_plots", f"{roc_set}.png"))
+    plt.close()
