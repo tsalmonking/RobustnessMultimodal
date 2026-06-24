@@ -13,16 +13,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str, required=True, choices=["clean", "perturbed"])
     parser.add_argument("--modality", type=str, choices=["feature-fusion", "intermediate-fusion", "late-fusion", "text", "image"])
-    parser.add_argument("--mode",  type=str, choices=["mean", "min", "max", "text-perturbed", "image-perturbed"])
+    parser.add_argument("--mode",  type=str, choices=["mean", "min", "max"])
+    parser.add_argument("--perturbation_type",  type=str, choices=["biperturbed", "image-perturbed", "text-perturbed"])
     parser.add_argument("--roc-set", type=str, help="Name of ROC comparison group")
     args = parser.parse_args()
 
+    if args.type == "perturbed" and args.perturbation_type is None:
+        parser.error("--perturbation_type is required when --type is perturbed")
+
+    if args.type == "clean" and args.perturbation_type is not None:
+        parser.error("--perturbation_type can only be used when --type is perturbed")
+
     base = f"data/Recovery/classification_results/{args.type}/{args.modality}"
     if args.modality == "late-fusion":
-        base = f"data/Recovery/classification_results/{args.type}/{args.modality}/{args.mode}"
-    elif args.modality == "feature-fusion" or args.modality == "intermediate-fusion":
-        if args.mode is not None:
-            base = f"data/Recovery/classification_results/{args.type}/{args.modality}/{args.mode}"
+        if args.mode is None:
+            parser.error("--mode is required when --modality is late-fusion")
+        base = os.path.join(base, args.mode)
+
+    if args.type == "perturbed":
+        if args.perturbation_type in ["image-perturbed", "text-perturbed"]:
+            base = os.path.join(base, args.perturbation_type)
 
     if args.type == "clean":
         df = pd.read_csv(f"{base}/results.csv")

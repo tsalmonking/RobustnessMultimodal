@@ -510,14 +510,23 @@ def save_results(
     with open(os.path.join(result_dir, "result.json"), "w") as f:
         json.dump(result_data, f, indent=4)
 
-def save_predictions(y_true, y_preds, scores, logits, indices, output_dir):
+def save_predictions(y_true, y_preds, scores, logits, indices, output_dir, ssims=None, txt_similarities=None):
     data = {
             'index': indices,
             'label': y_true,
             'pred': y_preds,
             'score': scores,
-            'logit': logits
+            'logit': logits,
         }
+    
+    if ssims is not None:
+        data.update({
+            'ssim': ssims
+        })
+    if txt_similarities is not None:
+        data.update({
+            'text similarity': txt_similarities
+        })
     
     df = pd.DataFrame(data)
     df.to_csv(output_dir, index=False)
@@ -868,21 +877,41 @@ def preds_fusion(first_modality_outputs, second_modality_outputs, mode):
     
     return fused_scores
 
-def create_late_fusion(text_csv, image_csv, output_dir, fusion_type):
+def create_late_fusion(text_csv, image_csv, output_dir, fusion_type, threshold=0.5):
     text_df = pd.read_csv(text_csv)
     image_df = pd.read_csv(image_csv)
 
-    assert len(text_df) == len(image_df)
-    assert (text_df["index"] == image_df["index"]).all()
+    if len(text_df) != len(image_df):
+        raise ValueError(
+            f"Text and image CSV have different lengths: "
+            f"{len(text_df)} != {len(image_df)}"
+        )
+
+    if not (text_df["index"].values == image_df["index"].values).all():
+        raise ValueError("Text and image CSV have different sample indexes.")
+
+    if not (text_df["label"].values == image_df["label"].values).all():
+        raise ValueError("Text and image CSV have different labels.")
 
     if fusion_type == "mean":
         scores = (text_df["score"] + image_df["score"]) / 2
-    elif fusion_type == "min":
-        scores = pd.concat([text_df["score"], image_df["score"]],axis=1).min(axis=1)
-    elif fusion_type == "max":
-        scores = pd.concat([text_df["score"], image_df["score"]],axis=1).max(axis=1)
 
-    preds = (scores >= 0.5).astype(int)
+    elif fusion_type == "min":
+        scores = pd.concat(
+            [text_df["score"], image_df["score"]],
+            axis=1,
+        ).min(axis=1)
+
+    elif fusion_type == "max":
+        scores = pd.concat(
+            [text_df["score"], image_df["score"]],
+            axis=1,
+        ).max(axis=1)
+
+    else:
+        raise ValueError(f"Unknown fusion type: {fusion_type}")
+
+    preds = (scores >= threshold).astype(int)
 
     result_df = pd.DataFrame({
         "index": text_df["index"],
@@ -893,6 +922,7 @@ def create_late_fusion(text_csv, image_csv, output_dir, fusion_type):
 
         "text_score": text_df["score"],
         "image_score": image_df["score"],
+
         "text_logit": text_df["logit"],
         "image_logit": image_df["logit"],
     })
@@ -902,7 +932,18 @@ def create_late_fusion(text_csv, image_csv, output_dir, fusion_type):
 
     return result_df
 
-def create_late_fusion_parameters(text_parameters, image_parameters, output_dir, fusion_type):
+
+def create_late_fusion_parameters(
+    text_parameters,
+    image_parameters,
+    output_dir,
+    fusion_type,
+    scenario,
+    text_state,
+    image_state,
+    text_csv=None,
+    image_csv=None,
+):
     with open(text_parameters) as f:
         txt_params = json.load(f)
 
@@ -911,11 +952,24 @@ def create_late_fusion_parameters(text_parameters, image_parameters, output_dir,
 
     params = {
         "fusion_type": fusion_type,
+        "scenario": scenario,
+
+        "text_state": text_state,
+        "image_state": image_state,
+
+        "text_csv": text_csv,
+        "image_csv": image_csv,
+
+        "text_parameters_path": text_parameters,
+        "image_parameters_path": image_parameters,
+
         "text_parameters": txt_params,
-        "image_parameters": img_params
+        "image_parameters": img_params,
     }
 
-    with open(os.path.join(output_dir, "parameters.json"),"w") as f:
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(os.path.join(output_dir, "parameters.json"), "w") as f:
         json.dump(params, f, indent=2)
 
 def build_curve_name(args):
@@ -923,6 +977,10 @@ def build_curve_name(args):
     if args.modality == "late-fusion" or args.modality == "feature-fusion" or  args.modality == "intermediate-fusion":
         if args.mode is not None:
             name += f"-{args.mode}"
+        if args.perturbation_type is not None:
+            name += f"|{args.perturbation_type}"
+        else:
+            name += f"|{args.type}"
     return name
 
 def update_roc_cache( roc_set, curve_name, auc, fpr, tpr):
