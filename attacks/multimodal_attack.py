@@ -25,6 +25,7 @@ from utils import (
 from configuration import (
     SOURCE_LABEL,
     TARGET_LABEL,
+    ALTERNATION_ROUNDS
     PGD_ITERS,
     EPSILON,
     ALPHA_FACTOR,
@@ -63,6 +64,7 @@ def main():
     parser.add_argument("--set_params", type=bool, default=False)
     parser.add_argument("--source_label", type=int, default=SOURCE_LABEL, choices=(0,1))
     parser.add_argument("--target_label", type=int, default=TARGET_LABEL, choices=(0,1))
+    parser.add_argument("--alternation_rounds", type=int, default=ALTERNATION_ROUNDS)
     parser.add_argument("--pgd_iters", type=int, default=PGD_ITERS)
     parser.add_argument("--epsilon", type=float, default=EPSILON)
     parser.add_argument("--alpha_factor", type=float, default=ALPHA_FACTOR)
@@ -143,23 +145,37 @@ def main():
             }
             # Only consider correctly classified samples
             if label == args.source_label:
-                # Image perturbation
-                news_img_per, ssim_pgd, proccess_img = img_perturbation(model, tokenizer, processor, args, news, torch.tensor([label], device=device))
-                # Text perturbation
-                with torch.no_grad():
-                    news_txt_per, txt_similarity = bertattack(model, tokenizer, processor, args, news, label, device, bertattack_tokenizer, bertattack_mlm, device_mlm)
-                torch.cuda.empty_cache()
+                for _ in range(args.alternation_rounds):
+                    # Image perturbation on the current version of the sample
+                    news_img_per, ssim_pgd, _ = img_perturbation(model, tokenizer, processor, args, news_per, torch.tensor([label], device=device))
 
-                # Ensure the text perturbation is effective, if not use the original text as corrupted text
-                if txt_similarity < 0.5:
-                    news_txt_per = news
-                    txt_similarity = 1.0
+                    # Text perturbation on the current version of the sample
+                    with torch.no_grad():
+                        news_txt_per, txt_similarity = bertattack(
+                            model,
+                            tokenizer,
+                            processor,
+                            args,
+                            news_per,
+                            label,
+                            device,
+                            bertattack_tokenizer,
+                            bertattack_mlm,
+                            device_mlm
+                        )
 
-                # Create multimodal corrupted news
-                news_per = {
-                    "txt": news_txt_per["txt"],
-                    "img": news_img_per["img"],
-                }
+                    torch.cuda.empty_cache()
+
+                    # If text perturbation is not valid/effective, keep the current text
+                    if txt_similarity < 0.5:
+                        news_txt_per = news_per
+                        txt_similarity = 1.0
+
+                    # Create the new multimodal perturbed sample
+                    news_per = {
+                        "txt": news_txt_per["txt"],
+                        "img": to_pil(news_img_per["img"].squeeze(0).cpu()),
+                    }
             else:
                 # If the label is true we take the not perturbed sample
                 img_per = news["img"]
@@ -229,14 +245,12 @@ def main():
     attack_parameters = {
         "Source Label": args.source_label,
         "Target Label": args.target_label,
+        "Alternation Rounds for the MM Attack Optimization": args.alternation_rounds,
         "PGD Iters": args.pgd_iters,
         "Epsilon": args.epsilon,
         "Alpha Factor": args.alpha_factor,
         "K (BERT Attack)": args.k,
-        "Threshold Pred Score": args.threshold_pred_score,
-        "Max Words to Attack": args.max_words_to_attack,
-        "Max Candidates per Word": args.max_candidates_per_word,
-        "Max Words for Importance": args.max_words_for_importance,
+        "Threshold Pred Score": args.threshold_pred_score
     }
     parameters = {
         "Model Parameters": parameters,

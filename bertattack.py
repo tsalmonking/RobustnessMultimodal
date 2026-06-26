@@ -113,7 +113,7 @@ def _get_masked(words):
     return masked_words
 
 
-def get_important_scores(words, tgt_model, orig_prob, orig_label, orig_probs, tokenizer, batch_size, max_length, target_device):
+def get_important_scores(words, tgt_model, orig_prob, orig_label, orig_probs, tokenizer, batch_size, max_length):
     masked_words = _get_masked(words)
     texts = [' '.join(words) for words in masked_words]  # list of text of masked words
     all_input_ids = []
@@ -133,7 +133,7 @@ def get_important_scores(words, tgt_model, orig_prob, orig_label, orig_probs, to
     seqs = torch.tensor(all_input_ids, dtype=torch.long)
     masks = torch.tensor(all_masks, dtype=torch.long)
     segs = torch.tensor(all_segs, dtype=torch.long)
-    seqs = seqs.to(target_device)
+    seqs = seqs.to('cuda')
 
     eval_data = TensorDataset(seqs)
     # Run prediction for full data
@@ -159,7 +159,7 @@ def get_important_scores(words, tgt_model, orig_prob, orig_label, orig_probs, to
     return import_scores
 
 
-def get_substitues(substitutes, tokenizer, mlm_model, use_bpe, substitutes_score=None, threshold=3.0, mlm_device="cuda:0"):
+def get_substitues(substitutes, tokenizer, mlm_model, use_bpe, substitutes_score=None, threshold=3.0):
     # substitues L,k
     # from this matrix to recover a word
     words = []
@@ -175,7 +175,7 @@ def get_substitues(substitutes, tokenizer, mlm_model, use_bpe, substitutes_score
             words.append(tokenizer._convert_id_to_token(int(i)))
     else:
         if use_bpe == 1:
-            words = get_bpe_substitues(substitutes, tokenizer, mlm_model, mlm_device)
+            words = get_bpe_substitues(substitutes, tokenizer, mlm_model)
         else:
             return words
     #
@@ -183,7 +183,7 @@ def get_substitues(substitutes, tokenizer, mlm_model, use_bpe, substitutes_score
     return words
 
 
-def get_bpe_substitues(substitutes, tokenizer, mlm_model, mlm_device):
+def get_bpe_substitues(substitutes, tokenizer, mlm_model):
     # substitutes L, k
 
     substitutes = substitutes[0:12, 0:4] # maximum BPE candidates
@@ -207,7 +207,7 @@ def get_bpe_substitues(substitutes, tokenizer, mlm_model, mlm_device):
     word_list = []
     # all_substitutes = all_substitutes[:24]
     all_substitutes = torch.tensor(all_substitutes) # [ N, L ]
-    all_substitutes = all_substitutes[:24].to(mlm_device)
+    all_substitutes = all_substitutes[:24].to('cuda')
     # print(substitutes.size(), all_substitutes.size())
     N, L = all_substitutes.size()
     word_predictions = mlm_model(all_substitutes)[0] # N L vocab-size
@@ -223,28 +223,9 @@ def get_bpe_substitues(substitutes, tokenizer, mlm_model, mlm_device):
     return final_words
 
 
-def attack(
-    feature,
-    tgt_model,
-    mlm_model,
-    tokenizer,
-    k,
-    batch_size,
-    max_length=512,
-    cos_mat=None,
-    w2i={},
-    i2w={},
-    use_bpe=1,
-    threshold_pred_score=0.3,
-    target_device="cuda:0",
-    mlm_device="cuda:3",
-    max_words_to_attack=40,
-    max_candidates_per_word=12,
-    max_words_for_importance=64,
-    ):
+def attack(feature, tgt_model, mlm_model, tokenizer, k, batch_size, max_length=512, cos_mat=None, w2i={}, i2w={}, use_bpe=1, threshold_pred_score=0.3, target_device="cuda:0", mlm_device="cuda:1"):
     # MLM-process
     words, sub_words, keys = _tokenize(feature.seq, tokenizer)
-    words = words[:max_words_for_importance]
 
     # original label
     inputs = tokenizer.encode_plus(feature.seq, None, add_special_tokens=True, max_length=max_length, truncation=True, padding="max_length")
@@ -272,10 +253,9 @@ def attack(
     word_pred_scores_all = word_pred_scores_all[1:len(sub_words) + 1, :]
 
     important_scores = get_important_scores(words, tgt_model, current_prob, orig_label, orig_probs,
-                                            tokenizer, batch_size, max_length, target_device)
+                                            tokenizer, batch_size, max_length)
     feature.query += int(len(words))
     list_of_index = sorted(enumerate(important_scores), key=lambda x: x[1], reverse=True)
-    list_of_index = list_of_index[:max_words_to_attack]
     # print(list_of_index)
     final_words = copy.deepcopy(words)
 
@@ -294,8 +274,8 @@ def attack(
         substitutes = word_predictions[keys[top_index[0]][0]:keys[top_index[0]][1]]  # L, k
         word_pred_scores = word_pred_scores_all[keys[top_index[0]][0]:keys[top_index[0]][1]]
 
-        substitutes = get_substitues(substitutes, tokenizer, mlm_model, use_bpe, word_pred_scores, threshold_pred_score, mlm_device)
-        substitutes = substitutes[:max_candidates_per_word]
+        substitutes = get_substitues(substitutes, tokenizer, mlm_model, use_bpe, word_pred_scores, threshold_pred_score)
+
 
         most_gap = 0.0
         candidate = None

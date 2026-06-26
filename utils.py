@@ -313,10 +313,7 @@ def bertattack(
         use_bpe=use_bpe,
         threshold_pred_score=args.threshold_pred_score,
         target_device=device,
-        mlm_device=mlm_device,
-        max_words_to_attack=args.max_words_to_attack,
-        max_candidates_per_word=args.max_candidates_per_word,
-        max_words_for_importance=args.max_words_for_importance
+        mlm_device=mlm_device
     )
 
     corr_txt = attacked_feat.final_adverse
