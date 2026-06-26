@@ -19,14 +19,14 @@ from utils import (
     preds_fusion,
 )
 from configuration import (
-    NAME_LLM, 
-    NAME_IMG_EMBED, 
-    WEIGHTS_PATH, 
-    BATCH_SIZE, 
+    NAME_LLM,
+    NAME_IMG_EMBED,
+    WEIGHTS_PATH,
+    BATCH_SIZE,
     N_TOKENS,
     THRESHOLD,
-    RESULT_PATH
 )
+from paths import RESULT_PATH
 
 # Main evaluation function
 def main():
@@ -34,7 +34,7 @@ def main():
     # Here there are the evaluation parameters
     parser = argparse.ArgumentParser()
     parser.add_argument("--modality", type=str, choices=["feature-fusion", "intermediate-fusion", "late-fusion", "text", "image"])
-    parser.add_argument("--mode", type=str, choices=["mean", "max", "min"])
+    parser.add_argument("--late_fusion_mode", type=str, choices=["mean", "max", "min"])
     parser.add_argument("--threshold", type=float, default=THRESHOLD)
     parser.add_argument("--name_llm", type=str, default=NAME_LLM)
     parser.add_argument("--name_img_embed", type=str, default=NAME_IMG_EMBED)
@@ -69,7 +69,7 @@ def main():
         args.modality = "text"
         txt_model, tokenizer, _ = load_model(device, args)
         parameters["Model 2 Path"] = args.model_path
-        parameters["Fusion Mode"] = args.mode
+        parameters["Fusion Mode"] = args.late_fusion_mode
         args.model_path = WEIGHTS_PATH
         args.modality = "image"
         img_model, _, processor = load_model(device, args)
@@ -89,7 +89,7 @@ def main():
     # Threshold computation if a threshold is not provided
     if args.threshold is None:
         if args.modality == "late-fusion":
-            thr = compute_threshold(txt_model, processor, tokenizer, device, args, img_model, args.mode)
+            thr = compute_threshold(txt_model, processor, tokenizer, device, args, img_model, args.late_fusion_mode)
         else:
             thr = compute_threshold(model, processor, tokenizer, device, args)
     else:
@@ -104,7 +104,7 @@ def main():
     # Results dir setup
     output_dir = os.path.join(args.results_path, f"{args.dataset}", "clean", f"{args.modality}")
     if args.modality == "late-fusion":
-        output_dir = os.path.join(output_dir, f"{args.mode}") 
+        output_dir = os.path.join(output_dir, f"{args.late_fusion_mode}") 
     os.makedirs(output_dir, exist_ok=True)
     
     # Dataset obtaination
@@ -172,7 +172,7 @@ def main():
         logits_img = torch.cat(logits_img_list, dim=0).numpy().squeeze()
         scores_img = torch.cat(scores_img_list, dim=0).numpy().squeeze()
 
-        scores = preds_fusion(scores_txt, scores_img, args.mode).squeeze()
+        scores = preds_fusion(scores_txt, scores_img, args.late_fusion_mode).squeeze()
     else:
         logits = torch.cat(logits_list, dim=0).numpy().squeeze()
         scores = torch.cat(scores_list, dim=0).numpy().squeeze()

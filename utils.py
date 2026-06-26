@@ -32,7 +32,8 @@ import my_datasets
 
 from themis_model import get_Themis
 from bertattack import attack, Feature
-from configuration import ASYMMETRIC_ATTACK, SOURCE_LABEL, TARGET_LABEL
+from configuration import SOURCE_LABEL, TARGET_LABEL, FF_WEIGHTS_PATH, FF_NAME_IMG_EMBED
+from paths import ROC_SETS_DIR, ROC_PLOTS_DIR
 
 # Utilities for logging
 def info(msg):
@@ -538,8 +539,8 @@ def save_predictions(y_true, y_preds, scores, logits, indices, output_dir, ssims
 
 def load_model(device, args, correct_model_path=None):
     if args.modality == "feature-fusion" or args.modality == "intermediate-fusion":
-        args.name_img_embed = "openai/clip-vit-base-patch32"
-        args.model_path = "model/clip-vit-base-patch32_None_8_8_0.4_True10_best.pt"
+        args.name_img_embed = FF_NAME_IMG_EMBED
+        args.model_path = FF_WEIGHTS_PATH
 
     if args.merge_tokens == 0:
         args.merge_tokens = None
@@ -611,7 +612,7 @@ def compute_robustness_metrics(
     y_true,
     y_clean,
     y_corr,
-    ASYMMETRIC_ATTACK=ASYMMETRIC_ATTACK,
+    ASYMMETRIC_ATTACK=True,
     source_label=SOURCE_LABEL,
     target_label=TARGET_LABEL,
 ):
@@ -630,28 +631,15 @@ def compute_robustness_metrics(
     # Flip Rate (global)
     flip_rate = np.sum(y_clean != y_corr) / len(y_clean)
     # ASR
-    if not ASYMMETRIC_ATTACK:
-        # STANDARD: every sample attackable
-        is_correct_clean = y_clean == y_true
-        total_correct_clean = np.sum(is_correct_clean)
-
-        if total_correct_clean == 0:
-            asr = 0.0
-        else:
-            is_successful_attack = is_correct_clean & (y_corr != y_true)
-            successful_attacks = np.sum(is_successful_attack)
-            asr = successful_attacks / total_correct_clean
+    # Asymmetry to be removed (We are considering attacking on l)
+    is_attackable = (y_true == source_label) & (y_clean == source_label)
+    total_attackable = np.sum(is_attackable)
+    if total_attackable == 0:
+        asr = 0.0
     else:
-        # ASYMMETRIC_ATTACK: only one class is attackable
-        is_attackable = (y_true == source_label) & (y_clean == source_label)
-        total_attackable = np.sum(is_attackable)
-        if total_attackable == 0:
-            asr = 0.0
-        else:
-            # success = flip to target label
-            is_successful_attack = is_attackable & (y_corr == target_label)
-            successful_attacks = np.sum(is_successful_attack)
-            asr = successful_attacks / total_attackable
+        is_successful_attack = is_attackable & (y_corr == target_label)
+        successful_attacks = np.sum(is_successful_attack)
+        asr = successful_attacks / total_attackable
     return {
         "accuracy_on_clean": round(accuracy_on_clean, 3),
         "accuracy_on_corrupted": round(accuracy_on_corrupted, 3),
@@ -984,7 +972,7 @@ def build_curve_name(args):
     return name
 
 def update_roc_cache( roc_set, curve_name, auc, fpr, tpr):
-    roc_dir = "data/Recovery/classification_results/rocs/roc_sets"
+    roc_dir = ROC_SETS_DIR
     os.makedirs(roc_dir, exist_ok=True)
 
     roc_file = os.path.join(roc_dir, f"{roc_set}.json")
@@ -1008,7 +996,7 @@ def update_roc_cache( roc_set, curve_name, auc, fpr, tpr):
 
 
 def regenerate_plot(roc_cache, roc_set):
-    os.makedirs("data/Recovery/classification_results/rocs/roc_plots", exist_ok=True)
+    os.makedirs(ROC_PLOTS_DIR, exist_ok=True)
     plt.figure(figsize=(10, 10))
 
     COLORS = [
@@ -1039,5 +1027,5 @@ def regenerate_plot(roc_cache, roc_set):
     plt.legend(loc="lower right")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join("data/Recovery/classification_results/rocs/roc_plots", f"{roc_set}.png"))
+    plt.savefig(os.path.join(ROC_PLOTS_DIR, f"{roc_set}.png"))
     plt.close()
