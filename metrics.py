@@ -1,3 +1,4 @@
+from email.mime import base
 import os
 import json
 import argparse
@@ -5,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
+from paths import RESULT_PATH
 
 # Custom imports
 from utils import compute_metrics, plot_confusion_matrix, build_curve_name, update_roc_cache, regenerate_plot
@@ -12,7 +14,7 @@ from utils import compute_metrics, plot_confusion_matrix, build_curve_name, upda
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str, required=True, choices=["clean", "perturbed"])
-    parser.add_argument("--modality", type=str, choices=["feature-fusion", "intermediate-fusion", "late-fusion", "text", "image"])
+    parser.add_argument("--modality", type=str, required=True, choices=["feature-fusion", "intermediate-fusion", "late-fusion", "text", "image"])
     parser.add_argument("--mode",  type=str, choices=["mean", "min", "max"])
     parser.add_argument("--perturbation_type",  type=str, choices=["biperturbed", "image-perturbed", "text-perturbed"])
     parser.add_argument("--roc-set", type=str, help="Name of ROC comparison group")
@@ -20,24 +22,17 @@ if __name__ == "__main__":
 
     if args.type == "perturbed" and args.perturbation_type is None:
         parser.error("--perturbation_type is required when --type is perturbed")
-
-    if args.type == "clean" and args.perturbation_type is not None:
-        parser.error("--perturbation_type can only be used when --type is perturbed")
-
-    base = f"data/Recovery/classification_results/{args.type}/{args.modality}"
-    if args.modality == "late-fusion":
-        if args.mode is None:
+    elif args.type == "clean":
+        args.perturbation_type = ""
+        
+    if args.modality == "late-fusion" and args.mode is None:
             parser.error("--mode is required when --modality is late-fusion")
-        base = os.path.join(base, args.mode)
+    elif args.modality != "late-fusion":
+        args.mode = ""
 
-    if args.type == "perturbed":
-        if args.perturbation_type in ["image-perturbed", "text-perturbed"]:
-            base = os.path.join(base, args.perturbation_type)
-
-    if args.type == "clean":
-        df = pd.read_csv(f"{base}/results.csv")
-    else:
-        df = pd.read_csv(f"{base}/perturbed_results.csv")
+    results_file = f"{'perturbed_' if args.type == 'perturbed' else ''}results.csv"
+    base = os.path.join(RESULT_PATH, args.type, args.modality, args.mode, args.perturbation_type)
+    df = pd.read_csv(os.path.join(base, results_file))
 
     y_true = df["label"]
     y_pred = df["pred"]

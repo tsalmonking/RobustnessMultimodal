@@ -24,19 +24,18 @@ from utils import (
 from configuration import (
     SOURCE_LABEL,
     TARGET_LABEL,
-    PGD_ITERS, 
+    PGD_ITERS,
     EPSILON,
     ALPHA_FACTOR,
-    RESULT_PATH,
-    ASYMMETRIC_ATTACK
 )
+from paths import RESULT_PATH, CLEAN_IMAGE_PARAMS
 import my_datasets
 
 # Main evaluation function
 def main():
     dataset_classes, load_functions = load_available_datasets()
     # "Parameters" contains information about the model that would be attacked
-    parameters_path = os.path.join("data", "Recovery", "classification_results", "clean", "image", "parameters.json")
+    parameters_path = CLEAN_IMAGE_PARAMS
     with open(parameters_path, 'r', encoding='utf-8') as f:
         parameters = json.load(f)
         
@@ -56,7 +55,6 @@ def main():
     parser.add_argument("--use_lora", type=bool, default=parameters["Use LoRA"])
     parser.add_argument("--dataset", type=str, default=parameters["Dataset"])
     parser.add_argument("--set_params", type=bool, default=False)
-    parser.add_argument("--asymmetric", type=bool, default=ASYMMETRIC_ATTACK)
     parser.add_argument("--source_label", type=int, default=SOURCE_LABEL, choices=(0,1))
     parser.add_argument("--target_label", type=int, default=TARGET_LABEL, choices=(0,1))
     parser.add_argument("--pgd_iters", type=int, default=PGD_ITERS)
@@ -163,7 +161,6 @@ def main():
     
     # Save "Parameters" in a file
     attack_parameters = {
-        "Is The Attack Asymmetric": args.asymmetric,
         "Source Label": args.source_label,
         "Target Label": args.target_label,
         "PGD Iters": args.pgd_iters,

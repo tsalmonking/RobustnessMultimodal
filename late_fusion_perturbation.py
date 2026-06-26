@@ -2,35 +2,21 @@ import os
 
 # Custom imports
 from utils import create_late_fusion, create_late_fusion_parameters
+from paths import (
+    PERT_BASE,
+    CLEAN_TEXT_CSV, CLEAN_IMAGE_CSV, PER_TEXT_CSV, PER_IMAGE_CSV,
+    CLEAN_TEXT_PARAMS, CLEAN_IMAGE_PARAMS, PER_TEXT_PARAMS, PER_IMAGE_PARAMS,
+)
 
 
 if __name__ == "__main__":
-    BASE = "data/Recovery/classification_results"
-
-    CLEAN_BASE = os.path.join(BASE, "clean")
-    PERT_BASE = os.path.join(BASE, "perturbed")
-
-    # Input CSV
-    clean_text_csv = os.path.join(CLEAN_BASE, "text", "results.csv")
-    clean_image_csv = os.path.join(CLEAN_BASE, "image", "results.csv")
-
-    per_text_csv = os.path.join(PERT_BASE, "text", "perturbed_results.csv")
-    per_image_csv = os.path.join(PERT_BASE, "image", "perturbed_results.csv")
-
-    # Input parameters
-    clean_text_params = os.path.join(CLEAN_BASE, "text", "parameters.json")
-    clean_image_params = os.path.join(CLEAN_BASE, "image", "parameters.json")
-
-    per_text_params = os.path.join(PERT_BASE, "text", "parameters.json")
-    per_image_params = os.path.join(PERT_BASE, "image", "parameters.json")
-
     scenarios = {
         # Testo perturbato + immagine perturbata
         "both-perturbed": {
-            "text_csv": per_text_csv,
-            "image_csv": per_image_csv,
-            "text_params": per_text_params,
-            "image_params": per_image_params,
+            "text_csv": PER_TEXT_CSV,
+            "image_csv": PER_IMAGE_CSV,
+            "text_params": PER_TEXT_PARAMS,
+            "image_params": PER_IMAGE_PARAMS,
             "text_state": "perturbed",
             "image_state": "perturbed",
             "subdir": None,
@@ -38,10 +24,10 @@ if __name__ == "__main__":
 
         # Testo clean + immagine perturbata
         "image-perturbed": {
-            "text_csv": clean_text_csv,
-            "image_csv": per_image_csv,
-            "text_params": clean_text_params,
-            "image_params": per_image_params,
+            "text_csv": CLEAN_TEXT_CSV,
+            "image_csv": PER_IMAGE_CSV,
+            "text_params": CLEAN_TEXT_PARAMS,
+            "image_params": PER_IMAGE_PARAMS,
             "text_state": "clean",
             "image_state": "perturbed",
             "subdir": "image-perturbed",
@@ -49,10 +35,10 @@ if __name__ == "__main__":
 
         # Testo perturbato + immagine clean
         "text-perturbed": {
-            "text_csv": per_text_csv,
-            "image_csv": clean_image_csv,
-            "text_params": per_text_params,
-            "image_params": clean_image_params,
+            "text_csv": PER_TEXT_CSV,
+            "image_csv": CLEAN_IMAGE_CSV,
+            "text_params": PER_TEXT_PARAMS,
+            "image_params": CLEAN_IMAGE_PARAMS,
             "text_state": "perturbed",
             "image_state": "clean",
             "subdir": "text-perturbed",
