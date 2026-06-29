@@ -5,7 +5,8 @@
 _*
 
 # Dirs
+data_perturbed/
 data/Recovery/images/
-results
-model
-logs
+results/
+model/
+logs/

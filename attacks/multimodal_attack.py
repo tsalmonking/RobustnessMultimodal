@@ -56,7 +56,7 @@ def main():
     # Here there are the attack parameters
     parser = argparse.ArgumentParser()
     parser.add_argument("--modality", type=str, default=parameters["Modality"], choices=["feature-fusion", "intermediate-fusion", "text", "image"])
-    parser.add_argument("--name_llm", type=str, default=parameters["LLM Name"])
+    parser.add_argument("--name_llm", type=str, default=parameters["Name LLM"])
     parser.add_argument("--name_img_embed", type=str, default=parameters["Image Embedder Name"])
     parser.add_argument("--batch_size", type=int, default=parameters["Batch Size"])
     parser.add_argument("--model_path", type=str, default=parameters["Model Path"])
