@@ -1,3 +1,4 @@
+from pyexpat import model
 import sys
 import os
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -25,7 +26,7 @@ from utils import (
 from configuration import (
     SOURCE_LABEL,
     TARGET_LABEL,
-    ALTERNATION_ROUNDS
+    ALTERNATION_ROUNDS,
     PGD_ITERS,
     EPSILON,
     ALPHA_FACTOR,
@@ -34,6 +35,9 @@ from configuration import (
     MAX_WORDS_TO_ATTACK,
     MAX_CANDIDATES_PER_WORD,
     MAX_WORDS_FOR_IMPORTANCE,
+    MIN_TXT_SIMILARITY,
+    DEVICE,
+    DEVICE_MLM,
 )
 from paths import RESULT_PATH, CLEAN_FF_PARAMS
 import my_datasets
@@ -74,11 +78,12 @@ def main():
     parser.add_argument("--max_words_to_attack", type=int, default=MAX_WORDS_TO_ATTACK)
     parser.add_argument("--max_candidates_per_word", type=int, default=MAX_CANDIDATES_PER_WORD)
     parser.add_argument("--max_words_for_importance", type=int, default=MAX_WORDS_FOR_IMPORTANCE)
+    parser.add_argument("--min_txt_similarity", type=float, default=MIN_TXT_SIMILARITY)
     args = parser.parse_args()
 
     # Device setting
-    device = torch.device("cuda:1")
-    device_mlm = torch.device("cuda:2")
+    device = torch.device(DEVICE)
+    device_mlm = torch.device(DEVICE_MLM)
 
     # Model with relative tokenizer and processor loading
     model, tokenizer, processor = load_model(device, args, args.model_path)
@@ -93,7 +98,7 @@ def main():
     load_func = load_functions[args.dataset]
 
     # Results dir setup
-    output_dir = os.path.join(args.results_path, f"{args.dataset}", "feature-fusion", "perturbed")
+    output_dir = os.path.join(args.results_path, "perturbed", "feature-fusion")
     os.makedirs(output_dir, exist_ok=True)
 
     # Dataset obtaination
@@ -145,46 +150,28 @@ def main():
             }
             # Only consider correctly classified samples
             if label == args.source_label:
+                # news_per is the single running perturbed sample: it starts clean and
+                # accumulates the image and text perturbations across the alternation rounds
+                news_per = news
                 for _ in range(args.alternation_rounds):
                     # Image perturbation on the current version of the sample
-                    news_img_per, ssim_pgd, _ = img_perturbation(model, tokenizer, processor, args, news_per, torch.tensor([label], device=device))
+                    news_img_per, _, _ = img_perturbation(model, tokenizer, processor, args, news_per, torch.tensor([label], device=device))
+                    news_per = {"txt": news_per["txt"], "img": news_img_per["img"]}
 
                     # Text perturbation on the current version of the sample
                     with torch.no_grad():
-                        news_txt_per, txt_similarity = bertattack(
-                            model,
-                            tokenizer,
-                            processor,
-                            args,
-                            news_per,
-                            label,
-                            device,
-                            bertattack_tokenizer,
-                            bertattack_mlm,
-                            device_mlm
-                        )
-
+                        news_txt_per, txt_similarity = bertattack(model, tokenizer, processor, args, news_per, label, device, bertattack_tokenizer, bertattack_mlm, device_mlm)
                     torch.cuda.empty_cache()
 
-                    # If text perturbation is not valid/effective, keep the current text
-                    if txt_similarity < 0.5:
-                        news_txt_per = news_per
-                        txt_similarity = 1.0
-
-                    # Create the new multimodal perturbed sample
-                    news_per = {
-                        "txt": news_txt_per["txt"],
-                        "img": to_pil(news_img_per["img"].squeeze(0).cpu()),
-                    }
+                    # Only keep the text perturbation if it stays semantically similar enough
+                    if txt_similarity >= args.min_txt_similarity:
+                        news_per = {"txt": news_txt_per["txt"], "img": news_per["img"]}
             else:
-                # If the label is true we take the not perturbed sample
-                img_per = news["img"]
-                news_txt_per = news
-                txt_similarity = 1.0
-                ssim_pgd = 1.0
-            # Adding the new news to the list of news perturbed (or not if is a true sample)
-            txts_per_list.append(news_txt_per["txt"])
-            imgs_per_list.append(img_per)
+                # Correctly-classified Real sample: keep it unperturbed
+                news_per = news
+            # Adding the new (perturbed or clean) sample to the batch lists
+            txts_per_list.append(news_per["txt"])
+            imgs_per_list.append(news_per["img"])
 
         # Tokenization of multimodal corrupted texts
         txts_per_list = tokenizer(txts_per_list, return_tensors="pt", padding="max_length", truncation=True, return_attention_mask=False, max_length=args.n_tokens).to(device)

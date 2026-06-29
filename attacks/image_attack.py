@@ -27,6 +27,7 @@ from configuration import (
     PGD_ITERS,
     EPSILON,
     ALPHA_FACTOR,
+    DEVICE,
 )
 from paths import RESULT_PATH, CLEAN_IMAGE_PARAMS
 import my_datasets
@@ -64,7 +65,7 @@ def main():
     args = parser.parse_args()
 
     # Device setting
-    device = torch.device("cuda:1")
+    device = torch.device(DEVICE)
 
     # Model with relative tokenizer and processor loading
     model, tokenizer, processor = load_model(device, args, args.model_path)
@@ -74,7 +75,7 @@ def main():
     load_func = load_functions[args.dataset]
 
     # Results dir setup
-    output_dir = os.path.join(args.results_path, f"{args.dataset}", "perturbed", "image")
+    output_dir = os.path.join(args.results_path, "perturbed", "image")
     os.makedirs(output_dir, exist_ok=True)
 
     # Dataset obtaination
@@ -118,11 +119,7 @@ def main():
             if label == args.source_label:
                 # Image perturbation
                 news_img_per, ssim_pgd, proccess_img = img_perturbation(model, tokenizer, processor, args, news, torch.tensor([label], device=device))
-                # Create multimodal corrupted news (only image it was perturbed)
-                news_per = {
-                    "txt": news["txt"],
-                    "img": news_img_per["img"],
-                }
+                img_per = news_img_per["img"]
             else:
                 img_per = news["img"]
                 ssim_pgd = 1.0

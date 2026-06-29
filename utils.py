@@ -263,12 +263,13 @@ def img_perturbation(model, tokenizer, processor, args, news, label):
     attack = torchattacks.PGD(wrapped_model, eps=args.epsilon, alpha=alpha, steps=args.pgd_iters, random_start=True)
     corr_img = attack(process_img["pixel_values"], label)
 
-    # Construct corrupted news
-    corr_news = {"txt": news["txt"], "img": corr_img}
-
-    # Compute SSIM
+    # Compute SSIM before converting back to PIL
     ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     ssim_val = ssim(preds=corr_img.float(), target=process_img["pixel_values"].float())
+
+    # Convert perturbed tensor back to PIL Image so downstream processor can handle it uniformly
+    arr = (corr_img.squeeze(0).permute(1, 2, 0).detach().cpu().clamp(0, 1).numpy() * 255).astype(np.uint8)
+    corr_news = {"txt": news["txt"], "img": Image.fromarray(arr)}
 
     return corr_news, ssim_val, process_img["pixel_values"]
 
@@ -559,12 +560,6 @@ def load_model(device, args, correct_model_path=None):
         merge_tokens=args.merge_tokens,
         device=device
     )
-
-    if correct_model_path is None:
-        if args.modality == "text":
-            args.model_path = args.model_path.replace(".pt", "_txt_only.pt")
-        elif args.modality == "image":
-            args.model_path = args.model_path.replace(".pt", "_img_only.pt")
 
     if os.path.exists(args.model_path):
         try:
@@ -862,7 +857,7 @@ def preds_fusion(first_modality_outputs, second_modality_outputs, mode):
     
     return fused_scores
 
-def create_late_fusion(text_csv, image_csv, output_dir, fusion_type, threshold=0.5):
+def create_late_fusion(text_csv, image_csv, output_dir, fusion_type, threshold=0.5, filename="perturbed_results.csv"):
     text_df = pd.read_csv(text_csv)
     image_df = pd.read_csv(image_csv)
 
@@ -913,7 +908,7 @@ def create_late_fusion(text_csv, image_csv, output_dir, fusion_type, threshold=0
     })
 
     os.makedirs(output_dir, exist_ok=True)
-    result_df.to_csv(os.path.join(output_dir, "perturbed_results.csv"), index=False)
+    result_df.to_csv(os.path.join(output_dir, filename), index=False)
 
     return result_df
 

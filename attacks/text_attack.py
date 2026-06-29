@@ -30,6 +30,9 @@ from configuration import (
     MAX_WORDS_TO_ATTACK,
     MAX_CANDIDATES_PER_WORD,
     MAX_WORDS_FOR_IMPORTANCE,
+    MIN_TXT_SIMILARITY,
+    DEVICE,
+    DEVICE_MLM,
 )
 from paths import RESULT_PATH, CLEAN_TEXT_PARAMS
 import my_datasets
@@ -66,11 +69,12 @@ def main():
     parser.add_argument("--max_words_to_attack", type=int, default=MAX_WORDS_TO_ATTACK)
     parser.add_argument("--max_candidates_per_word", type=int, default=MAX_CANDIDATES_PER_WORD)
     parser.add_argument("--max_words_for_importance", type=int, default=MAX_WORDS_FOR_IMPORTANCE)
+    parser.add_argument("--min_txt_similarity", type=float, default=MIN_TXT_SIMILARITY)
     args = parser.parse_args()
 
     # Device setting
-    device = torch.device("cuda:1")
-    device_mlm = torch.device("cuda:2")
+    device = torch.device(DEVICE)
+    device_mlm = torch.device(DEVICE_MLM)
 
     # Model with relative tokenizer and processor loading
     model, tokenizer, processor = load_model(device, args, args.model_path)
@@ -85,7 +89,7 @@ def main():
     load_func = load_functions[args.dataset]
 
     # Results dir setup
-    output_dir = os.path.join(args.results_path, f"{args.dataset}", "perturbed", "text")
+    output_dir = os.path.join(args.results_path, "perturbed", "text")
     os.makedirs(output_dir, exist_ok=True)
 
     # Dataset obtaination
@@ -133,7 +137,7 @@ def main():
                 torch.cuda.empty_cache()
 
                 # Ensure the text corruption is effective, if not use the original text as corrupted text
-                if txt_similarity < 0.5:
+                if txt_similarity < args.min_txt_similarity:
                     news_txt_per = news
                     txt_similarity = 1.0
 
