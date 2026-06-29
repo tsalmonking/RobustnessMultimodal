@@ -6,6 +6,36 @@ The project is organized as a modular pipeline. Clean inference, adversarial att
 
 ---
 
+## Quick start
+
+To run the **entire pipeline end-to-end with the default configuration** — no
+need to edit `configuration.py` or `paths.py` — use the orchestrator script:
+
+```bash
+python run_pipeline.py
+```
+
+It runs every stage in order and stops at the first failure:
+
+1. clean evaluation — text, image, feature-fusion (`eval.py`);
+2. adversarial attacks — image (PGD), text (BERTAttack), multimodal (`attacks/`);
+3. late-fusion aggregation (`late_fusion_perturbation.py`);
+4. metrics + ROC plots (`create_rocs_plots.py`).
+
+Each stage logs to its own file under `logs/` (e.g. `logs/eval_text.log`,
+`logs/multimodal_attack.log`). Results land under `RESULT_PATH` and ROC plots
+under the `figures/` ROC directory (both defined in `paths.py`).
+
+This assumes the environment, datasets, and model weights are already in place
+(steps 1–6 below). For a fast smoke test of the whole pipeline, set
+`SUBSET_SIZE` in `configuration.py` to a small number (see
+[Quick test runs](#quick-test-runs-subset_size)) before launching it.
+
+The individual scripts documented in the rest of this README remain available
+for running or customizing a single stage.
+
+---
+
 ## Requirements
 
 Reference environment:
@@ -98,9 +128,27 @@ Before running the pipeline, check at least:
 - result root directory (`RESULT_PATH` in `paths.py`);
 - PGD parameters (`EPSILON`, `PGD_ITERS`, `ALPHA_FACTOR`);
 - BERTAttack parameters (`K_BERT_ATTACK`, etc.);
-- source and target labels.
+- source and target labels;
+- subset size for quick test runs (`SUBSET_SIZE`).
 
 Most values can also be overridden through command-line arguments.
+
+### Quick test runs (`SUBSET_SIZE`)
+
+`SUBSET_SIZE` in `configuration.py` restricts both the clean evaluation
+(`eval.py`) and all three attacks to the **first `N` samples** of the test set,
+so you can sanity-check the full pipeline in seconds instead of running on the
+whole dataset:
+
+```python
+# configuration.py
+SUBSET_SIZE = None  # full dataset (default)
+SUBSET_SIZE = 8     # only the first 8 samples — quick smoke test
+```
+
+It is a single switch that applies everywhere (clean eval + image / text /
+multimodal attacks), so the clean and perturbed result sets stay aligned on the
+same samples. Set it back to `None` for a full run.
 
 ### CUDA devices
 

@@ -20,6 +20,7 @@ from utils import (
     bertattack,
     load_available_datasets,
     save_predictions,
+    save_perturbed_image,
 )
 from configuration import (
     SOURCE_LABEL,
@@ -28,8 +29,9 @@ from configuration import (
     EPSILON,
     ALPHA_FACTOR,
     DEVICE,
+    SUBSET_SIZE,
 )
-from paths import RESULT_PATH, CLEAN_IMAGE_PARAMS
+from paths import RESULT_PATH, CLEAN_IMAGE_PARAMS, DATA_PERTURBED_IMAGE
 import my_datasets
 
 # Main evaluation function
@@ -89,12 +91,12 @@ def main():
         f"data/{args.dataset}/images",
     )
     
-    # Dataloader creation
-    dataloader_test = DataLoader(
-        dataset_test,
-        batch_size=args.batch_size,
-        shuffle=False,
-    )
+    # Dataloader creation (optionally restricted to the first N samples for quick tests)
+    if SUBSET_SIZE is not None:
+        sampler = list(range(min(SUBSET_SIZE, len(dataset_test))))
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, sampler=sampler)
+    else:
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False)
 
     y_true_list = [] # True labels 0 V 1
     indices_list = [] # Indices of the samples in the original dataset
@@ -120,6 +122,8 @@ def main():
                 # Image perturbation
                 news_img_per, ssim_pgd, proccess_img = img_perturbation(model, tokenizer, processor, args, news, torch.tensor([label], device=device))
                 img_per = news_img_per["img"]
+                # Dump the perturbed image for qualitative analysis
+                save_perturbed_image(os.path.join(DATA_PERTURBED_IMAGE, "images"), indices[i].item(), img_per)
             else:
                 img_per = news["img"]
                 ssim_pgd = 1.0

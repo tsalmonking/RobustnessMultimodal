@@ -27,6 +27,7 @@ from configuration import (
     N_TOKENS,
     THRESHOLD,
     DEVICE_EVAL,
+    SUBSET_SIZE,
 )
 from paths import RESULT_PATH
 
@@ -128,12 +129,12 @@ def main():
         f"data/{args.dataset}/images",
     )
     
-    # Dataloader creation
-    dataloader_test = DataLoader(
-        dataset_test,
-        batch_size=args.batch_size,
-        shuffle=False,
-    )
+    # Dataloader creation (optionally restricted to the first N samples for quick tests)
+    if SUBSET_SIZE is not None:
+        sampler = list(range(min(SUBSET_SIZE, len(dataset_test))))
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, sampler=sampler)
+    else:
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False)
     
     y_true_list = [] # True labels 0 V 1
     indices_list = [] # Indices of the samples in the original dataset

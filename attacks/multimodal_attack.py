@@ -22,6 +22,8 @@ from utils import (
     bertattack,
     load_available_datasets,
     save_predictions,
+    save_perturbed_image,
+    save_perturbed_texts,
 )
 from configuration import (
     SOURCE_LABEL,
@@ -38,8 +40,9 @@ from configuration import (
     MIN_TXT_SIMILARITY,
     DEVICE,
     DEVICE_MLM,
+    SUBSET_SIZE,
 )
-from paths import RESULT_PATH, CLEAN_FF_PARAMS
+from paths import RESULT_PATH, CLEAN_FF_PARAMS, DATA_PERTURBED_FF
 import my_datasets
 
 # Main evaluation function
@@ -112,12 +115,12 @@ def main():
         f"data/{args.dataset}/images",
     )
     
-    # Dataloader creation
-    dataloader_test = DataLoader(
-        dataset_test,
-        batch_size=args.batch_size,
-        shuffle=False,
-    )
+    # Dataloader creation (optionally restricted to the first N samples for quick tests)
+    if SUBSET_SIZE is not None:
+        sampler = list(range(min(SUBSET_SIZE, len(dataset_test))))
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, sampler=sampler)
+    else:
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False)
 
     y_true_list = [] # True labels 0 V 1
     indices_list = [] # Indices of the samples in the original dataset
@@ -133,6 +136,8 @@ def main():
     # Lists that contain logits and scores with only image perturbed
     logits_imgs_per_list = []
     scores_imgs_per_list = []
+
+    perturbed_text_rows = [] # (index, original, perturbed) for qualitative analysis
 
     for images, labels, texts, imgs_path, indices in tqdm(dataloader_test, desc="Evaluating batches", total=len(dataloader_test)):
         images = images.to(device)
@@ -166,6 +171,13 @@ def main():
                     # Only keep the text perturbation if it stays semantically similar enough
                     if txt_similarity >= args.min_txt_similarity:
                         news_per = {"txt": news_txt_per["txt"], "img": news_per["img"]}
+                # Dump the perturbed image + text for qualitative analysis
+                save_perturbed_image(os.path.join(DATA_PERTURBED_FF, "images"), indices[i].item(), news_per["img"])
+                perturbed_text_rows.append({
+                    "index": indices[i].item(),
+                    "original": news["txt"],
+                    "perturbed": news_per["txt"],
+                })
             else:
                 # Correctly-classified Real sample: keep it unperturbed
                 news_per = news
@@ -227,7 +239,10 @@ def main():
     save_predictions(y_true, y_preds, scores, logits, indices, os.path.join(output_dir, "perturbed_results.csv"))
     save_predictions(y_true, y_txts_per_preds, txts_per_scores, txts_per_logits, indices, os.path.join(output_dir, "txts_perturbed_results.csv"))
     save_predictions(y_true, y_imgs_per_preds, imgs_per_scores, imgs_per_logits, indices, os.path.join(output_dir, "imgs_perturbed_results.csv"))
-    
+
+    # Dump perturbed texts for qualitative analysis (images already dumped during the loop)
+    save_perturbed_texts(DATA_PERTURBED_FF, perturbed_text_rows)
+
     # Save "Parameters" in a file
     attack_parameters = {
         "Source Label": args.source_label,

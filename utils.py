@@ -531,6 +531,20 @@ def save_predictions(y_true, y_preds, scores, logits, indices, output_dir, ssims
     df.to_csv(output_dir, index=False)
 
 
+def save_perturbed_image(img_dir, index, pil_img):
+    """Dump a single perturbed PIL image as <index>.png for qualitative analysis."""
+    os.makedirs(img_dir, exist_ok=True)
+    pil_img.save(os.path.join(img_dir, f"{index}.png"))
+
+
+def save_perturbed_texts(out_dir, rows):
+    """Write collected perturbed texts (list of {index, original, perturbed}) to texts.csv."""
+    if not rows:
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    pd.DataFrame(rows).sort_values("index").to_csv(os.path.join(out_dir, "texts.csv"), index=False)
+
+
 # -----------------------
 # Model loading
 # -----------------------
